@@ -186,6 +186,40 @@ app.get('/export/avatars.csv', async (req, res) => {
     }
 });
 
+// --- Background + on-demand username sync (RTDB -> DB) ---
+// Automatic: runs ~2 min after boot, then every RTDB_SYNC_HOURS (default 6).
+// On-demand:  POST /admin/sync  (requires X-Auth-Secret if AUTH_SECRET is set).
+// Never deletes anything — pruning stays a manual decision.
+
+const SYNC_HOURS_RAW = parseFloat(process.env.RTDB_SYNC_HOURS);
+const SYNC_HOURS = Number.isFinite(SYNC_HOURS_RAW) ? SYNC_HOURS_RAW : 6;
+let syncInFlight = false;
+
+async function runUserSync(trigger) {
+  if (syncInFlight) return { skipped: 'already running' };
+  if (!rtdb.isAvailable()) return { skipped: 'RTDB auth not available yet' };
+  syncInFlight = true;
+  try {
+    const stats = await db.syncUsernames();
+    console.log(`[sync:${trigger}] ${stats.users} user(s) checked — ` +
+      `${stats.updated} username(s) updated, ${stats.stillDefault} still default-named`);
+    return stats;
+  } catch (err) {
+    console.error(`[sync:${trigger}] failed:`, err.message);
+    return { error: err.message };
+  } finally {
+    syncInFlight = false;
+  }
+}
+
+app.post('/admin/sync', async (req, res) => {
+  const secret = process.env.AUTH_SECRET;
+  if (secret && req.get('X-Auth-Secret') !== secret) {
+    return res.status(401).json({ error: 'Bad or missing X-Auth-Secret' });
+  }
+  res.json({ status: 'ok', trigger: 'manual', ...(await runUserSync('manual')) });
+});
+
 // Match the old server's 404 message for anything unknown
 app.use((req, res) => res.status(404).json({ error: "Not found. Use '/' or '/avatars'" }));
 
