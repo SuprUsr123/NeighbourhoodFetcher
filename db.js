@@ -291,6 +291,6 @@ async function end() {
 }
 
 module.exports = {
-    initDb, insertUsers, insertAvatars, deleteUsers,
-    listUsers, listAvatars, end, getPool,
+  initDb, insertUsers, insertAvatars, deleteUsers, syncUsernames,
+  listUsers, listAvatars, end, getPool,
 };
