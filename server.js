@@ -235,6 +235,12 @@ db.initDb()
     });
     // Render sends SIGTERM on deploys/restarts — shut down cleanly
     process.on('SIGTERM', () => server.close(() => process.exit(0)));
+      // schedule the automatic username sync
+    if (SYNC_HOURS > 0) {
+      setTimeout(() => runUserSync('startup'), 2 * 60 * 1000);   // 2 min after boot
+      setInterval(() => runUserSync('interval'), SYNC_HOURS * 3600 * 1000);
+      console.log(`   🔄 Auto username sync: every ${SYNC_HOURS}h (POST /admin/sync to force)`);
+    }
 })
 .catch((err) => {
     console.error('Failed to initialize database:', err.message);
