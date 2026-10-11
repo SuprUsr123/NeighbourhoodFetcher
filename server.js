@@ -3,55 +3,50 @@
  * ReKindle Data Collector Server — Render + Neon edition (Node.js).
  *
  * Collector API (unchanged from the original Python server):
- *   POST /         body: [{"id": "...", "username": "..."}, ...]
- *                  resp: {"status": "ok", "users_added": N}
- *   POST /avatars  body: [{"username": "...", "avatar": "data:image/png;base64,..."}]
- *                  resp: {"status": "ok", "avatars_added": N}
- *   - CORS wide open, same as always
- *   - Users keyed by UID; RTDB usernames replace stored ones;
- *     default (UID-prefix) usernames are never stored
- *   - Avatars deduplicated by username (first one wins)
- *   - Storage in PostgreSQL (Neon) instead of CSV files
+ *   POST /         body: [{"id": "...", "username": "..."}]  -> {"users_added": N}
+ *   POST /avatars  body: [{"username": "...", "avatar": "..."}] -> {"avatars_added": N}
  *
- * Additions (new endpoints, they don't affect the POST API above):
- *   POST /auth                -> the scraper script supplies Firebase tokens
- *   GET  /                    -> avatar viewer page (index.html)
- *   GET  /avatars             -> JSON list of all avatars (used by the viewer)
- *   GET  /users               -> JSON list of all users
- *   GET  /browse              -> user directory page (users.html)
- *   GET  /export/users.csv    -> old-format CSV backup of users
- *   GET  /export/avatars.csv  -> old-format CSV backup of avatars
- *   GET  /health              -> 200 OK
+ * Additional endpoints:
+ *   POST /auth                 -> scraper supplies Firebase session tokens
+ *   POST /admin/sync           -> force a full RTDB -> DB username sync
+ *   GET  /                     -> combined app (Directory / Gallery / Help Wanted)
+ *   GET  /browse               -> redirects to /  (merged into the single page)
+ *   GET  /users | /avatars     -> JSON lists
+ *   GET  /missing-avatars      -> users without pfps (for HELP WANTED)
+ *   GET  /submissions?voter=   -> pending community drawings + threshold
+ *   POST /submissions          -> submit a 16x16 drawing (user must exist in DB)
+ *   POST /submissions/:id/vote -> vote; auto-publishes at the threshold
+ *   GET  /export/*.csv         -> old-format CSV backups
+ *   GET  /health               -> 200 OK
  *
- * Environment variables:
- *   DATABASE_URL  (required)  Neon/PostgreSQL connection string
- *   AUTH_SECRET   (optional)  if set, POST /auth requires a matching X-Auth-Secret header
- *   PORT          (optional)  Render sets this automatically; defaults to 8765
+ * Env vars:
+ *   DATABASE_URL  (required)   Neon string (SECRET)
+ *   REKINDLE_EMAIL / REKINDLE_PASSWORD    standing RTDB account
+ *   AUTH_SECRET   (optional)   required on /auth and /admin/sync as X-Auth-Secret
+ *   AVATAR_VOTE_THRESHOLD      votes needed to publish a drawing (default 3)
+ *   RTDB_SYNC_HOURS            background sync interval (default 6, 0 = off)
+ *   PORT          (optional)   Render sets this; 8765 locally
  */
 
 const path = require('path');
 const express = require('express');
 const db = require('./db');
-const rtdb = require('./rtdb');        // FIX 1: was missing — rtdb was used
-                                       // below but never imported (the crash)
+const rtdb = require('./rtdb');
 
 const app = express();
-const PORT = process.env.PORT || 8765; // 8765 locally, same as before
-const VIEWER_HTML = path.join(__dirname, 'index.html');  // FIX 4: must match the real file name!
-const USERS_HTML = path.join(__dirname, 'users.html');   // FIX 3: directory page
+const PORT = process.env.PORT || 8765;
+const INDEX_HTML = path.join(__dirname, 'index.html');
+const VOTE_THRESHOLD = Math.max(1, parseInt(process.env.AVATAR_VOTE_THRESHOLD, 10) || 3);
 
-// --- CORS (same as the old server) ---
-// FIX 2: previous version set Allow-Headers twice (second call overwrote
-// the first, killing X-Auth-Secret) and had lost Allow-Origin entirely.
+// --- CORS (wide open, like the old server) ---
 app.use((req, res, next) => {
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
     res.set('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Secret');
-    if (req.method === 'OPTIONS') return res.status(200).end(); // preflight
+    if (req.method === 'OPTIONS') return res.status(200).end();
     next();
 });
 
-// --- Parse raw bodies so we mirror the old server's exact error messages ---
 const rawBody = express.raw({ type: '*/*', limit: '64mb' });
 
 function getJsonBody(req, res) {
@@ -68,7 +63,8 @@ function getJsonBody(req, res) {
     }
 }
 
-// --- POST / -> add users (unchanged API) ---
+// --- Collector API (unchanged) ---
+
 app.post('/', rawBody, async (req, res) => {
     const data = getJsonBody(req, res);
     if (data === null) return;
@@ -78,8 +74,8 @@ app.post('/', rawBody, async (req, res) => {
     try {
         const result = await db.insertUsers(data);
         console.log(`[users] ${result.written} written, ` +
-        `${result.replacedFromRtdb} replaced from RTDB, ` +
-        `${result.skippedDefault} skipped (default usernames)`);
+            `${result.replacedFromRtdb} replaced from RTDB, ` +
+            `${result.skippedDefault} skipped (default usernames)`);
         res.json({ status: 'ok', users_added: result.written });
     } catch (err) {
         console.error('Failed to store users:', err.message);
@@ -87,7 +83,6 @@ app.post('/', rawBody, async (req, res) => {
     }
 });
 
-// --- POST /avatars -> add avatars (unchanged API) ---
 app.post('/avatars', rawBody, async (req, res) => {
     const data = getJsonBody(req, res);
     if (data === null) return;
@@ -103,12 +98,11 @@ app.post('/avatars', rawBody, async (req, res) => {
     }
 });
 
-// --- GET / -> serve the avatar viewer ---
-app.get('/', (req, res) => res.sendFile(VIEWER_HTML));
+// --- The app (single page, everything in one place) ---
 
-// --- Everything below is additive; the collector API above is untouched ---
+app.get('/', (req, res) => res.sendFile(INDEX_HTML));
+app.get('/browse', (req, res) => res.redirect(302, '/')); // users.html merged into /
 
-// GET /avatars -> JSON list (used by the viewer's "Load from server" button)
 app.get('/avatars', async (req, res) => {
     try {
         res.json(await db.listAvatars());
@@ -127,13 +121,8 @@ app.get('/users', async (req, res) => {
     }
 });
 
-// FIX 3: GET /browse -> user directory (users.html). Clicking a username
-// opens https://rekindle.ink/neighbourhood?uid=<id>. /users stays the JSON API.
-app.get('/browse', (req, res) => res.sendFile(USERS_HTML));
+// --- POST /auth -> scraper supplies Firebase session tokens ---
 
-// --- POST /auth -> the scraper script supplies Firebase session tokens ---
-// The userscript runs on rekindle.ink while you're logged in and forwards
-// its tokens here, so the server never needs your personal password.
 app.post('/auth', rawBody, (req, res) => {
     const secret = process.env.AUTH_SECRET;
     if (secret && req.get('X-Auth-Secret') !== secret) {
@@ -149,9 +138,121 @@ app.post('/auth', rawBody, (req, res) => {
     res.json({ status: 'ok', updated, tokens: rtdb.tokenStatus() });
 });
 
+// --- Background + on-demand username sync ---
+
+const SYNC_HOURS_RAW = parseFloat(process.env.RTDB_SYNC_HOURS);
+const SYNC_HOURS = Number.isFinite(SYNC_HOURS_RAW) ? SYNC_HOURS_RAW : 6;
+let syncInFlight = false;
+
+async function runUserSync(trigger) {
+    if (syncInFlight) return { skipped: 'already running' };
+    if (!rtdb.isAvailable()) return { skipped: 'RTDB auth not available yet' };
+    syncInFlight = true;
+    try {
+        const stats = await db.syncUsernames();
+        console.log(`[sync:${trigger}] ${stats.users} user(s) checked — ` +
+            `${stats.updated} username(s) updated, ${stats.stillDefault} still default-named`);
+        return stats;
+    } catch (err) {
+        console.error(`[sync:${trigger}] failed:`, err.message);
+        return { error: err.message };
+    } finally {
+        syncInFlight = false;
+    }
+}
+
+app.post('/admin/sync', async (req, res) => {
+    const secret = process.env.AUTH_SECRET;
+    if (secret && req.get('X-Auth-Secret') !== secret) {
+        return res.status(401).json({ error: 'Bad or missing X-Auth-Secret' });
+    }
+    res.json({ status: 'ok', trigger: 'manual', ...(await runUserSync('manual')) });
+});
+
+// --- NEW: community avatar drawings (HELP WANTED) ---
+
+app.get('/missing-avatars', async (req, res) => {
+    try {
+        res.json(await db.listMissingAvatarUsers());
+    } catch (err) {
+        console.error('Failed to list missing avatars:', err.message);
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+app.get('/submissions', async (req, res) => {
+    try {
+        const voter = String(req.query.voter || '').substring(0, 64);
+        res.json({ status: 'ok', threshold: VOTE_THRESHOLD,
+                   submissions: await db.listSubmissions(voter) });
+    } catch (err) {
+        console.error('Failed to list submissions:', err.message);
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+app.post('/submissions', rawBody, async (req, res) => {
+    const data = getJsonBody(req, res);
+    if (data === null) return;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        return res.status(400).json({ error: 'Expected a submission object' });
+    }
+    const userId = String(data.user_id || '').trim();
+    const image = String(data.image || '');
+    const grid = Array.isArray(data.grid) ? data.grid : null;
+    const artist = String(data.artist || '').trim().substring(0, 30);
+    const voter = String(data.voter || '').trim().substring(0, 64);
+
+    if (!userId) return res.status(400).json({ error: 'user_id is required' });
+    if (!image.startsWith('data:image/png;base64,') || image.length > 20000) {
+        return res.status(400).json({ error: 'image must be a small PNG data URI' });
+    }
+    if (!grid || grid.length !== 256 ||
+        !grid.every((c) => typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c))) {
+        return res.status(400).json({ error: 'grid must be an array of 256 hex colors' });
+    }
+    try {
+        const created = await db.createSubmission(userId, image, grid, artist, voter);
+        if (created === null) {
+            return res.status(400).json({ error: 'User not found in the database' });
+        }
+        console.log(`[avatars] submission ${created.id} for ${created.username}` +
+                    (artist ? ` by ${artist}` : ''));
+        res.json({ status: 'ok', id: created.id, threshold: VOTE_THRESHOLD });
+    } catch (err) {
+        console.error('Failed to store submission:', err.message);
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+app.post('/submissions/:id/vote', rawBody, async (req, res) => {
+    const data = getJsonBody(req, res);
+    if (data === null) return;
+    const id = parseInt(req.params.id, 10);
+    const voter = String((data && data.voter) || '').trim().substring(0, 64);
+    if (!id || !voter) {
+        return res.status(400).json({ error: 'voter is required' });
+    }
+    try {
+        const r = await db.voteOnSubmission(id, voter, VOTE_THRESHOLD);
+        if (!r.ok) {
+            return res.status(r.code === 404 ? 404 : 400).json({ error: r.message });
+        }
+        if (r.published) {
+            console.log(`[avatars] submission ${id} published (${r.votes} votes)`);
+        }
+        res.json({ status: 'ok', votes: r.votes, published: r.published,
+                   message: r.message || null });
+    } catch (err) {
+        console.error('Failed to record vote:', err.message);
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+// --- Exports, health, 404 ---
+
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
-// CSV exports in the exact old format (every field quoted, quotes doubled)
 const csvEscape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
 function csvResponse(res, header, rows, filename) {
@@ -186,60 +287,25 @@ app.get('/export/avatars.csv', async (req, res) => {
     }
 });
 
-// --- Background + on-demand username sync (RTDB -> DB) ---
-// Automatic: runs ~2 min after boot, then every RTDB_SYNC_HOURS (default 6).
-// On-demand:  POST /admin/sync  (requires X-Auth-Secret if AUTH_SECRET is set).
-// Never deletes anything — pruning stays a manual decision.
-
-const SYNC_HOURS_RAW = parseFloat(process.env.RTDB_SYNC_HOURS);
-const SYNC_HOURS = Number.isFinite(SYNC_HOURS_RAW) ? SYNC_HOURS_RAW : 6;
-let syncInFlight = false;
-
-async function runUserSync(trigger) {
-  if (syncInFlight) return { skipped: 'already running' };
-  if (!rtdb.isAvailable()) return { skipped: 'RTDB auth not available yet' };
-  syncInFlight = true;
-  try {
-    const stats = await db.syncUsernames();
-    console.log(`[sync:${trigger}] ${stats.users} user(s) checked — ` +
-      `${stats.updated} username(s) updated, ${stats.stillDefault} still default-named`);
-    return stats;
-  } catch (err) {
-    console.error(`[sync:${trigger}] failed:`, err.message);
-    return { error: err.message };
-  } finally {
-    syncInFlight = false;
-  }
-}
-
-app.post('/admin/sync', async (req, res) => {
-  const secret = process.env.AUTH_SECRET;
-  if (secret && req.get('X-Auth-Secret') !== secret) {
-    return res.status(401).json({ error: 'Bad or missing X-Auth-Secret' });
-  }
-  res.json({ status: 'ok', trigger: 'manual', ...(await runUserSync('manual')) });
-});
-
-// Match the old server's 404 message for anything unknown
 app.use((req, res) => res.status(404).json({ error: "Not found. Use '/' or '/avatars'" }));
 
 // --- Start: create tables first, then listen ---
+
 db.initDb()
 .then(() => {
     const server = app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 ReKindle Server (Node + Neon) running on http://0.0.0.0:${PORT}`);
-        console.log("   📌 POST '/'        → add users (ID + username)");
-        console.log("   📌 POST '/avatars' → add avatars (username + base64)");
-        console.log("   🌐 GET  '/'        → avatar viewer");
+        console.log(`   📌 POST '/' and '/avatars'      → collector API (unchanged)`);
+        console.log(`   🌐 GET  '/'                      → directory / gallery / help wanted`);
+        console.log(`   🎨 HELP WANTED: threshold ${VOTE_THRESHOLD} vote(s) to publish`);
         console.log(`   🔥 RTDB username sync: ${rtdb.isAvailable() ? 'enabled' : 'awaiting scraper tokens'}`);
     });
-    // Render sends SIGTERM on deploys/restarts — shut down cleanly
     process.on('SIGTERM', () => server.close(() => process.exit(0)));
-      // schedule the automatic username sync
+
     if (SYNC_HOURS > 0) {
-      setTimeout(() => runUserSync('startup'), 2 * 60 * 1000);   // 2 min after boot
-      setInterval(() => runUserSync('interval'), SYNC_HOURS * 3600 * 1000);
-      console.log(`   🔄 Auto username sync: every ${SYNC_HOURS}h (POST /admin/sync to force)`);
+        setTimeout(() => runUserSync('startup'), 2 * 60 * 1000);
+        setInterval(() => runUserSync('interval'), SYNC_HOURS * 3600 * 1000);
+        console.log(`   🔄 Auto username sync: every ${SYNC_HOURS}h (POST /admin/sync to force)`);
     }
 })
 .catch((err) => {
