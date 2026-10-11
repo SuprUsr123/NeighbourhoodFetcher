@@ -1,30 +1,26 @@
 /**
  * Firebase RTDB integration — source of truth for real usernames.
  *
- * AUTHENTICATION: the Tampermonkey scraper is the authenticator. It runs on
- * rekindle.ink while you're logged in and periodically POSTs its session
- * tokens to the server (POST /auth):
- *   - main/social ID tokens from the page's Firebase session
- *   - the page's firebase:authUser:* localStorage entries, which contain
- *     long-lived refresh tokens
- * The server authenticates in this order:
- *   1. submitted ID tokens (valid ~1h)
- *   2. refresh tokens -> securetoken.googleapis.com
- *   3. env REKINDLE_EMAIL + REKINDLE_PASSWORD (optional fallback)
- * A MAIN token alone is enough: the SOCIAL token can be minted via the
- * getSocialToken callable, same as rk::Client::authenticateSocial().
+ * AUTH, in order of preference:
+ *   1. ID tokens submitted by the scraper (POST /auth) — valid ~1h
+ *   2. Refresh tokens (from the scraper's localStorage entries, or env
+ *      REKINDLE_MAIN_REFRESH) -> securetoken.googleapis.com
+ *   3. Standing account: REKINDLE_EMAIL + REKINDLE_PASSWORD env vars
+ *      (ilovekindle@rekindle.ink, the public service account)
+ * A MAIN token alone is enough — the SOCIAL token gets minted via the
+ * getSocialToken callable (same flow as the C++ client).
+ *
+ * All requests are spoofed as rekindle.ink (Origin/Referer/UA) — the API
+ * key is referrer-restricted to rekindle.ink, so the Referer header is
+ * mandatory for identitytoolkit calls.
  *
  * RTDB reads append ?auth=<token>: user_cards with the MAIN token,
- * users_public with the SOCIAL token.
+ * users_public with the SOCIAL token. user_cards wins on conflicts,
+ * mirroring rk::Client::username().
  *
- * Configuration comes from rekindle-config.json (mainApiBase, rtdbBase,
- * firebase.*.databaseUrl, firebase.*.apiKey).
- *
- * Env vars:
- *   REKINDLE_EMAIL + REKINDLE_PASSWORD    optional password fallback
- *   REKINDLE_MAIN_REFRESH (+ _SOCIAL_)    optional refresh-token bootstrap
- *   REKINDLE_CONFIG                       path to the config file
- *   RTDB_ORIGIN / RTDB_DISABLE / paths    as before
+ * Env vars: REKINDLE_EMAIL, REKINDLE_PASSWORD, REKINDLE_MAIN_REFRESH,
+ * REKINDLE_SOCIAL_REFRESH, REKINDLE_CONFIG, RTDB_ORIGIN, RTDB_DISABLE,
+ * RTDB_CARDS_PATH, RTDB_PUBLIC_PATH, RTDB_USERNAME_FIELD.
  */
 
 const fs = require('fs');
@@ -288,7 +284,7 @@ async function ensureAuth(force = false) {
         if (auth.signingIn) return auth.signingIn; // one sign-in at a time
         if (lastAuthFailure.err &&
             Date.now() - lastAuthFailure.at < AUTH_FAILURE_BACKOFF_MS) {
-            throw lastAuthFailure.err;
+            throw lastAuthFailure.err; // creds are bad — back off
             }
 
             if (force) { auth.mainToken = null; auth.socialToken = null; }
@@ -347,7 +343,7 @@ async function fetchNode(baseUrl, nodePath, token) {
                 headers: SPOOFED_HEADERS,
                 signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
             });
-            if (res.status === 404) return {};
+            if (res.status === 404) return {}; // node doesn't exist (yet)
             if (!res.ok) {
                 const err = new Error(`${nodePath} -> HTTP ${res.status}`);
                 err.status = res.status;

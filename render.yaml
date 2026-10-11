@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: neighbourhoodfetcher
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false                              # Neon string — SECRET
+      - key: REKINDLE_EMAIL
+        sync: false                              # ilovekindle@rekindle.ink
+      - key: REKINDLE_PASSWORD
+        sync: false                              # "we arefamily"
+      - key: AUTH_SECRET
+        sync: false                              # optional; must match the userscript

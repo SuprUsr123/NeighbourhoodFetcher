@@ -1,0 +1,29 @@
+{
+  "mainApiBase": "https://us-central1-rekindle-dd1fa.cloudfunctions.net/",
+  "socialApiBase": "https://us-central1-rekindle-socials.cloudfunctions.net/",
+  "moderationWorker": "https://rekindle-moderate.timjarnott.workers.dev",
+  "translationWorker": "https://rekindle-translate.timjarnott.workers.dev",
+  "rtdbBase": "https://rekindle-socials-default-rtdb.firebaseio.com/",
+  "firestoreBase": "https://firestore.googleapis.com/v1/projects/rekindle-socials/databases/(default)/documents/",
+  "mainFirestoreBase": "https://firestore.googleapis.com/v1/projects/rekindle-dd1fa/databases/(default)/documents/",
+  "firebase": {
+    "main": {
+      "apiKey": "AIzaSyDY7x7vVmlYUyVZNLuCCmIQYa6PWFVfZqQ",
+      "authDomain": "rekindle-dd1fa.firebaseapp.com",
+      "projectId": "rekindle-dd1fa",
+      "storageBucket": "rekindle-dd1fa.firebasestorage.app",
+      "messagingSenderId": "748026882518",
+      "appId": "1:748026882518:web:6877dd4329318070c11c77",
+      "databaseUrl": "https://rekindle-dd1fa-default-rtdb.firebaseio.com/"
+    },
+    "social": {
+      "apiKey": "AIzaSyBy_n32McwWZidFn28-1eHYBTYjvVDH_Wk",
+      "authDomain": "rekindle-socials.firebaseapp.com",
+      "projectId": "rekindle-socials",
+      "storageBucket": "rekindle-socials.firebasestorage.app",
+      "messagingSenderId": "1004814440293",
+      "appId": "1:1004814440293:web:abc94996445575be9b338c",
+      "databaseUrl": "https://rekindle-socials-default-rtdb.firebaseio.com"
+    }
+  }
+}

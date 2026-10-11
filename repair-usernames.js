@@ -10,7 +10,7 @@
  *                                        # that have no RTDB entry
  */
 
-const { parseArgs } = require('util');   // (yes, with the `values` destructure this time)
+const { parseArgs } = require('util');
 const db = require('./db');
 const rtdb = require('./rtdb');
 
@@ -23,8 +23,8 @@ async function main() {
     });
 
     if (!rtdb.isAvailable()) {
-        console.error('RTDB not configured — set FIREBASE_DATABASE_URL and ' +
-        'FIREBASE_SERVICE_ACCOUNT (or FIREBASE_SERVICE_ACCOUNT_PATH).');
+        console.error('RTDB auth not available — set REKINDLE_EMAIL + REKINDLE_PASSWORD ' +
+        '(or REKINDLE_MAIN_REFRESH) and make sure rekindle-config.json is present.');
         process.exitCode = 1;
         return;
     }

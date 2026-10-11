@@ -2,17 +2,12 @@
 /**
  * Import your old ReKindle CSV backups into the Neon/PostgreSQL database.
  *
- * Usage (run from the project folder):
- *
- *   export DATABASE_URL="postgresql://user:pass@ep-xxxx.neon.tech/neondb?sslmode=require"
+ *   export DATABASE_URL='postgresql://...'
  *   node import-csv.js --users   ~/Downloads/rekindle_users_backup.csv
  *   node import-csv.js --avatars ~/Downloads/rekindle_avatars_backup.csv
  *
- * Or both at once. Pass --db <url> instead of the env var if you prefer.
- *
- * Safe to re-run: rows that already exist (same user ID / same avatar
- * username) are skipped, exactly like the old server did when appending
- * to the CSVs.
+ * Safe to re-run: existing rows are skipped; the RTDB replacement and
+ * default-name filter apply to imported users too.
  */
 
 const fs = require('fs');
@@ -69,8 +64,8 @@ function readUsersCsv(file) {
         if (i === 0 && looksLikeHeader(row)) return;
         if (row.length < 2) return;
         const username = row[0].trim();
-        const userId = row[row.length - 1].trim(); // ID is the last column (same rule as before)
-    if (username && userId) rows.push({ user_id: userId, username });
+        const userId = row[row.length - 1].trim(); // ID is the last column
+        if (username && userId) rows.push({ user_id: userId, username });
     });
     return rows;
 }
@@ -90,6 +85,7 @@ function readAvatarsCsv(file) {
 }
 
 async function main() {
+    // FIXED: parseArgs returns { values, positionals } — destructure `values`
     const { values: args } = parseArgs({
         options: {
             users: { type: 'string' },
@@ -99,7 +95,6 @@ async function main() {
     });
 
     if (args.db) process.env.DATABASE_URL = args.db;
-
     if (!args.users && !args.avatars) {
         console.error('nothing to do — pass --users and/or --avatars');
         process.exitCode = 1;

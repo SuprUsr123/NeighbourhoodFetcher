@@ -1,19 +1,14 @@
 /**
- * Shared database layer for the ReKindle server and the CSV importer.
+ * Postgres (Neon) layer.
  *
- * Tables (created automatically on first run):
- *   rekindle_users   (user_id, username, created_at)
- *   rekindle_avatars (username, avatar, created_at)
+ * Tables (created automatically):
+ *   rekindle_users   (user_id PK, username, created_at)
+ *   rekindle_avatars (username PK, avatar, created_at)
  *
- * Users are keyed by UID. Stored usernames can now be REPLACED:
- *   - if the Firebase RTDB has an entry for the UID, its username wins
- *   - usernames containing the first 8 chars of the UID (auto-generated
- *     defaults) are never stored
- *   - otherwise the freshest custom username wins
- *
- * Avatars are still deduplicated by username (first one wins), but when a
- * user's username changes, the matching avatar row is renamed along with it
- * so the username join keeps working.
+ * Users are keyed by UID. Stored usernames get REPLACED when better data
+ * arrives (RTDB wins, then fresh custom names); usernames containing the
+ * first 8 chars of the UID (auto-generated defaults) are never stored.
+ * When a username changes, the matching avatar row is renamed along with it.
  */
 
 const { Pool } = require('pg');
@@ -44,7 +39,7 @@ function getPool() {
         ssl: sslFor(url),
                     max: 10,
                     connectionTimeoutMillis: 10000,
-                    idleTimeoutMillis: 60000,
+                    idleTimeoutMillis: 60000, // stay under Neon's 5-minute auto-suspend window
     });
     pool.on('error', (err) => console.error('[db] idle client error:', err.message));
     return pool;
@@ -88,7 +83,7 @@ async function initDb() {
     )`));
 }
 
-// --- avatars (unchanged behavior: dedupe by username, first one wins) ---
+// --- avatars (dedupe by username, first one wins) ---
 
 function buildInsert(table, columns, conflictColumn, rows) {
     const values = [];
@@ -138,7 +133,7 @@ async function insertAvatars(rows) {
                       [...clean.values()], AVATARS_CHUNK);
 }
 
-// --- users (NEW: RTDB replacement + default-name filtering) ---
+// --- users (RTDB replacement + default-name filtering) ---
 
 function buildUserUpsert(rows) {
     const values = [];
@@ -169,7 +164,7 @@ async function insertUsers(rows) {
         return { written: 0, skippedDefault: 0, replacedFromRtdb: 0 };
     }
 
-    // RTDB index (null if not configured); failure here must not break the POST
+    // RTDB index (null if unavailable); failure must not break the POST
     let rtdbMap = null;
     try {
         rtdbMap = await rtdb.getUsernames();
@@ -177,19 +172,17 @@ async function insertUsers(rows) {
         console.error('[rtdb] lookup failed, continuing without it:', err.message);
     }
 
-    // decide what to actually store, per user
-    const toStore = new Map(); // uid -> username
+    const toStore = new Map();
     let skippedDefault = 0;
     let replacedFromRtdb = 0;
 
     for (const [uid, name] of incoming) {
         const rtdbName = rtdbMap ? rtdbMap.get(uid) : undefined;
         if (typeof rtdbName === 'string' && !rtdb.looksLikeDefaultName(uid, rtdbName)) {
-            // there's a matching RTDB entry with a real username — it replaces
             if (rtdbName !== name) replacedFromRtdb++;
             toStore.set(uid, rtdbName);
         } else if (!rtdb.looksLikeDefaultName(uid, name)) {
-            toStore.set(uid, name); // no usable RTDB entry, but a real custom name
+            toStore.set(uid, name);
         } else {
             skippedDefault++; // default-looking name, nothing better — never store it
         }
@@ -198,7 +191,7 @@ async function insertUsers(rows) {
     if (toStore.size === 0) {
         return { written: 0, skippedDefault, replacedFromRtdb };
     }
-    const batch = [...toStore.entries()]; // [[uid, name], ...]
+    const batch = [...toStore.entries()];
 
     return withRetry(async () => {
         const client = await getPool().connect();

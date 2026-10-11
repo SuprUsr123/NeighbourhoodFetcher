@@ -2,15 +2,12 @@
 /**
  * ReKindle Data Collector Server — Render + Neon edition (Node.js).
  *
- * The POST API is unchanged from rekindle_server.py:
- *
+ * Collector API (unchanged from the original Python server):
  *   POST /         body: [{"id": "...", "username": "..."}, ...]
  *                  resp: {"status": "ok", "users_added": N}
- *
- *   POST /avatars  body: [{"username": "...", "avatar": "data:image/png;base64,..."}, ...]
+ *   POST /avatars  body: [{"username": "...", "avatar": "data:image/png;base64,..."}]
  *                  resp: {"status": "ok", "avatars_added": N}
- *
- *   - CORS is still wide open (Access-Control-Allow-Origin: *)
+ *   - CORS wide open, same as always
  *   - Users keyed by UID; RTDB usernames replace stored ones;
  *     default (UID-prefix) usernames are never stored
  *   - Avatars deduplicated by username (first one wins)
@@ -54,7 +51,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- Parse raw bodies manually so we mirror the old server's exact errors ---
+// --- Parse raw bodies so we mirror the old server's exact error messages ---
 const rawBody = express.raw({ type: '*/*', limit: '64mb' });
 
 function getJsonBody(req, res) {
@@ -83,7 +80,7 @@ app.post('/', rawBody, async (req, res) => {
         console.log(`[users] ${result.written} written, ` +
         `${result.replacedFromRtdb} replaced from RTDB, ` +
         `${result.skippedDefault} skipped (default usernames)`);
-        res.json({ status: 'ok', users_added: result.written });   // <- API unchanged
+        res.json({ status: 'ok', users_added: result.written });
     } catch (err) {
         console.error('Failed to store users:', err.message);
         res.status(500).json({ error: 'Database error' });
@@ -109,7 +106,7 @@ app.post('/avatars', rawBody, async (req, res) => {
 // --- GET / -> serve the avatar viewer ---
 app.get('/', (req, res) => res.sendFile(VIEWER_HTML));
 
-// --- Everything below is additive; the POST API above is untouched ---
+// --- Everything below is additive; the collector API above is untouched ---
 
 // GET /avatars -> JSON list (used by the viewer's "Load from server" button)
 app.get('/avatars', async (req, res) => {
@@ -136,7 +133,7 @@ app.get('/browse', (req, res) => res.sendFile(USERS_HTML));
 
 // --- POST /auth -> the scraper script supplies Firebase session tokens ---
 // The userscript runs on rekindle.ink while you're logged in and forwards
-// its tokens here, so the server never needs your password.
+// its tokens here, so the server never needs your personal password.
 app.post('/auth', rawBody, (req, res) => {
     const secret = process.env.AUTH_SECRET;
     if (secret && req.get('X-Auth-Secret') !== secret) {
