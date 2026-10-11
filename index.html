@@ -1,177 +1,1111 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ReKindle User Directory</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, shrink-to-fit=no">
+    <title>ReKindle Neighbourhood</title>
     <style>
-        body { font-family: 'Courier New', monospace; background: #f0f0f0; padding: 20px; }
-        .nav { margin-bottom: 12px; font-size: 13px; }
-        .nav a { color: black; }
-        #stats { margin-bottom: 10px; font-size: 14px; color: #333; }
-        .controls { margin-bottom: 20px; }
-        .controls button { background: white; border: 2px solid black; padding: 6px 12px;
-                font-family: inherit; cursor: pointer; box-shadow: 2px 2px 0 black; }
-        .controls button:active { transform: translate(2px, 2px); box-shadow: none; }
-        .controls input { background: white; border: 2px solid black; box-shadow: 2px 2px 0 black;
-                padding: 6px 12px; font-family: inherit; font-size: 14px; width: 280px; }
-        .controls input:focus { outline: none; }
-        .gallery { display: flex; flex-wrap: wrap; gap: 20px; }
-        .card { background: white; border: 2px solid black; box-shadow: 4px 4px 0 rgba(0,0,0,0.2);
-                padding: 10px; text-align: center; width: 140px; }
-        .card img { border: 1px solid #ccc; width: 64px; height: 64px; image-rendering: pixelated; }
-        .card .placeholder { width: 64px; height: 64px; line-height: 64px; margin: 0 auto;
-                background: #e8e8e8; border: 1px solid #ccc; font-size: 24px; color: #999; overflow: hidden; }
-        .card .name { font-size: 13px; margin-top: 6px; word-break: break-all; }
-        .card .name a { color: black; text-decoration: underline; }
-        .card .name a:hover { background: #ffff66; }
-        .card .uid { font-size: 10px; color: #999; margin-top: 4px; word-break: break-all; }
-        .empty { color: #999; font-style: italic; }
+        /* E-ink safety: no animations, ever */
+        * { transition: none !important; animation: none !important; }
+        [hidden] { display: none !important; }
+
+        :root {
+            --shadow: 4px 4px 0px #000000;
+            --stripe-pattern: repeating-linear-gradient(0deg, transparent, transparent 2px, #000 3px, #000 4px);
+        }
+
+        /* ---- Environment ---- */
+        body {
+            background-color: #e5e5e5;
+            font-family: "Geneva", "Verdana", sans-serif;
+            image-rendering: pixelated;
+            margin: 0;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ---- Window ---- */
+        .window {
+            background: white;
+            border: 2px solid black;
+            box-shadow: var(--shadow);
+            width: 95%;
+            max-width: 620px;
+            height: 92vh;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        /* ---- Title bar ---- */
+        .title-bar {
+            height: 35px;
+            border-bottom: 2px solid black;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: white;
+            position: relative;
+            flex-shrink: 0;
+        }
+        .title-stripes {
+            position: absolute;
+            top: 4px; bottom: 4px; left: 4px; right: 4px;
+            background-image: var(--stripe-pattern);
+            z-index: 0;
+        }
+        .title-text {
+            background: white;
+            padding: 0 15px;
+            font-weight: bold;
+            font-size: 1.05rem;
+            z-index: 1;
+            white-space: nowrap;
+        }
+        .close-box {
+            position: absolute;
+            left: 10px;
+            width: 18px; height: 18px;
+            border: 2px solid black;
+            background: white;
+            z-index: 2;
+            cursor: pointer;
+            box-shadow: 2px 2px 0 black;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.9rem;
+            line-height: 1;
+            font-family: sans-serif;
+        }
+        .close-box:active { background: black; color: white; box-shadow: none; }
+        .title-controls {
+            position: absolute;
+            right: 10px;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+        }
+        .icon-btn {
+            width: 18px; height: 18px;
+            border: 2px solid black;
+            background: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 2px 2px 0 black;
+            padding: 0;
+            flex-shrink: 0;
+        }
+        .icon-btn:active { background: black; color: white; transform: translate(1px, 1px); box-shadow: none; }
+        .title-controls .icon-btn + .icon-btn { margin-left: 6px; }
+        .beta-badge {
+            font-size: 0.6rem;
+            margin-left: 5px;
+            border: 1px solid black;
+            padding: 1px 3px;
+            font-weight: bold;
+            font-family: sans-serif;
+            vertical-align: text-top;
+            display: inline-block;
+            background: white;
+            color: black;
+        }
+
+        /* ---- Tabs (room-header pattern) ---- */
+        .room-header {
+            border-bottom: 2px solid black;
+            display: flex;
+            align-items: stretch;
+            background: #eee;
+            flex-shrink: 0;
+        }
+        .room-tab {
+            flex: 1;
+            padding: 8px 6px;
+            text-align: center;
+            font-weight: bold;
+            text-transform: uppercase;
+            cursor: pointer;
+            background: white;
+            color: black;
+            border: none;
+            border-right: 2px solid black;
+            font-family: inherit;
+            font-size: 0.75rem;
+            box-sizing: border-box;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        .room-tab:last-child { border-right: none; }
+        .room-tab.active { background: black; color: white; }
+
+        /* ---- Tab views ---- */
+        .tab-view {
+            flex: 1 1 auto;
+            display: none;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .tab-view.active { display: flex; }
+        .scroll-area {
+            flex: 1 1 auto;
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        /* ---- Panel headers / buttons ---- */
+        .panel-header {
+            border-bottom: 2px solid black;
+            background: #eee;
+            padding: 8px 10px;
+            flex-shrink: 0;
+        }
+        .status-line {
+            font-size: 0.8rem;
+            color: #333;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #search {
+            width: 100%;
+            box-sizing: border-box;
+            border: 2px solid black;
+            border-radius: 0;
+            background: white;
+            padding: 10px 12px;
+            font-family: inherit;
+            font-size: 1rem;
+            height: 44px;
+        }
+        #search:focus { outline: none; }
+        .sys-btn {
+            background: white;
+            border: 2px solid black;
+            box-shadow: 2px 2px 0 black;
+            padding: 10px 16px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            font-weight: bold;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        .sys-btn:active { background: black; color: white; transform: translate(2px, 2px); box-shadow: none; }
+        .sys-btn:disabled { opacity: 0.5; cursor: default; }
+        .btn-row { display: flex; align-items: center; }
+        .btn-row .sys-btn + .sys-btn { margin-left: 8px; }
+
+        /* ---- Card grids (CSS Grid: gap IS allowed here) ---- */
+        .grid-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+            gap: 10px;
+            padding: 10px;
+        }
+        .card {
+            background: white;
+            border: 2px solid black;
+            box-shadow: 2px 2px 0 #ccc;
+            padding: 8px 4px;
+            text-align: center;
+            text-decoration: none;
+            color: black;
+            display: block;
+        }
+        .card:active { transform: translate(2px, 2px); box-shadow: none; }
+        .card img, .sub-row img {
+            width: 64px;
+            height: 64px;
+            image-rendering: pixelated;
+            border: 1px solid #ccc;
+        }
+        .card .ph {
+            width: 64px; height: 64px;
+            line-height: 64px;
+            margin: 0 auto;
+            background: #e8e8e8;
+            border: 1px solid #ccc;
+            font-size: 24px;
+            font-weight: bold;
+            color: #999;
+            overflow: hidden;
+        }
+        .card .name { font-size: 0.8rem; margin-top: 6px; word-break: break-all; text-decoration: underline; }
+        .card .uid { font-size: 0.6rem; color: #999; margin-top: 3px; word-break: break-all; }
+        .center-btn { display: block; margin: 6px auto 16px; }
+        .empty { color: #666; font-style: italic; text-align: center; padding: 30px 10px; }
+
+        /* ---- Drop area (gallery tab, desktop nicety) ---- */
+        #drop-area {
+            border: 2px dashed #999;
+            padding: 10px;
+            text-align: center;
+            margin-top: 8px;
+            background: #fafafa;
+            font-size: 0.8rem;
+            color: #666;
+        }
+        #drop-area.dragover { border-color: black; background: #e0e0e0; }
+
+        /* ---- HELP WANTED lists ---- */
+        .section-title {
+            font-weight: bold;
+            background: #eee;
+            border-bottom: 1px solid #ccc;
+            padding: 6px 10px;
+            font-size: 0.85rem;
+        }
+        .help-row, .sub-row {
+            display: flex;
+            align-items: center;
+            padding: 8px 10px;
+            border-bottom: 1px solid #ccc;
+        }
+        .help-info { flex: 1 1 auto; min-width: 0; margin-right: 10px; }
+        .help-name { font-weight: bold; font-size: 0.9rem; word-break: break-all; }
+        .help-uid { font-size: 0.6rem; color: #999; word-break: break-all; }
+        .pending-badge {
+            border: 1px solid black;
+            background: #eee;
+            font-size: 0.65rem;
+            font-weight: bold;
+            padding: 2px 5px;
+            margin-right: 10px;
+            white-space: nowrap;
+        }
+        .sub-row img { border: 2px solid black; margin-right: 12px; flex-shrink: 0; }
+        .sub-info { flex: 1 1 auto; min-width: 0; margin-right: 10px; }
+        .sub-info .for { font-size: 0.85rem; word-break: break-all; }
+        .sub-votes { font-size: 0.75rem; color: #333; margin-top: 3px; font-weight: bold; }
+        #help-msg { padding: 10px; font-size: 0.8rem; color: #333; min-height: 20px; }
+
+        /* ---- Editor modal (System 7, z-index 10000) ---- */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.95);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+        }
+        .editor-box {
+            background: white;
+            border: 2px solid black;
+            box-shadow: var(--shadow);
+            width: 95%;
+            max-width: 420px;
+            max-height: 95vh;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        .editor-body { padding: 10px; }
+        .ed-hint { font-size: 0.7rem; color: #666; margin-bottom: 6px; }
+        #ed-canvas {
+            display: block;
+            margin: 0 auto 10px auto;
+            border: 2px solid black;
+            background: white;
+            image-rendering: pixelated;
+            touch-action: none;
+            cursor: crosshair;
+        }
+        .palette {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+        .swatch {
+            height: 28px;
+            border: 1px solid black;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        .swatch.selected { border: 3px solid black; }
+        #ed-artist {
+            width: 100%;
+            box-sizing: border-box;
+            border: 2px solid black;
+            border-radius: 0;
+            background: white;
+            padding: 8px 10px;
+            font-family: inherit;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+        }
+        #ed-artist:focus { outline: none; }
+        #ed-error { font-size: 0.8rem; color: #b00000; min-height: 18px; margin-top: 8px; }
     </style>
 </head>
 <body>
 
-<h1>👥 ReKindle User Directory</h1>
+    <div class="window">
+        <div class="title-bar">
+            <div class="title-stripes"></div>
+            <div class="close-box" onclick="window.location.href='https://rekindle.ink/'">X</div>
+            <span class="title-text">
+                <span data-i18n="app.title">ReKindle Neighbourhood</span><span class="beta-badge">BETA</span>
+            </span>
+            <div class="title-controls">
+                <button class="icon-btn" onclick="window.location.href='/export/users.csv'"
+                        title="Download users.csv" data-i18n-title="app.btn.users_csv">
+                    <svg width="14" height="14" viewBox="0 0 32 32">
+                        <rect x="4" y="6" width="24" height="20" fill="none" stroke="currentColor" stroke-width="2"></rect>
+                        <path d="M8 22 L8 12 L13 12 L13 22 M17 22 L17 12 L23 12 L23 22" fill="none" stroke="currentColor" stroke-width="2"></path>
+                    </svg>
+                </button>
+                <button class="icon-btn" onclick="window.location.href='/export/avatars.csv'"
+                        title="Download avatars.csv" data-i18n-title="app.btn.avatars_csv">
+                    <svg width="14" height="14" viewBox="0 0 32 32">
+                        <path d="M16 4 L16 18 M9 11 L16 18 L23 11" fill="none" stroke="currentColor" stroke-width="2"></path>
+                        <path d="M6 22 L6 27 L26 27 L26 22" fill="none" stroke="currentColor" stroke-width="2"></path>
+                    </svg>
+                </button>
+            </div>
+        </div>
 
-<div class="nav">
-    <a href="/">📸 Avatar gallery</a> &nbsp;·&nbsp;
-    <a href="/export/users.csv">⬇ Download users.csv</a>
-</div>
+        <div class="room-header">
+            <div id="tabbtn-directory" class="room-tab active" onclick="switchTab('directory')"
+                 data-i18n="app.tab.directory">Directory</div>
+            <div id="tabbtn-gallery" class="room-tab" onclick="switchTab('gallery')"
+                 data-i18n="app.tab.gallery">Gallery</div>
+            <div id="tabbtn-help" class="room-tab" onclick="switchTab('help')">Help Wanted<span id="help-count"></span></div>
+        </div>
 
-<div id="stats">Loading users…</div>
+        <!-- DIRECTORY -->
+        <div id="view-directory" class="tab-view active">
+            <div class="panel-header">
+                <div id="dir-stats" class="status-line">Loading users...</div>
+                <input id="search" type="search" placeholder="Search username or ID..."
+                       autocomplete="off" data-i18n-placeholder="app.search">
+            </div>
+            <div class="scroll-area">
+                <div id="dir-grid" class="grid-cards"></div>
+                <button id="dir-more" class="sys-btn center-btn" hidden data-i18n="app.show_more">Show more</button>
+            </div>
+        </div>
 
-<div class="controls">
-    <input id="search" type="search" placeholder="Search username or ID…" autocomplete="off">
-</div>
+        <!-- GALLERY -->
+        <div id="view-gallery" class="tab-view">
+            <div class="panel-header">
+                <div id="gal-stats" class="status-line">No avatars loaded.</div>
+                <div class="btn-row">
+                    <button id="gal-reload" class="sys-btn" data-i18n="app.btn.reload">Reload</button>
+                    <button class="sys-btn" onclick="window.location.href='/export/avatars.csv'"
+                            data-i18n="app.btn.download_csv">Download CSV</button>
+                </div>
+                <div id="drop-area">
+                    Drop <code>rekindle_avatars_backup.csv</code> here (desktop) or
+                    <button class="sys-btn" style="padding:4px 10px;margin-left:6px;"
+                            onclick="document.getElementById('gal-file').click()">Browse...</button>
+                    <input type="file" id="gal-file" accept=".csv" style="display:none">
+                </div>
+            </div>
+            <div class="scroll-area">
+                <div id="gal-grid" class="grid-cards"></div>
+            </div>
+        </div>
 
-<div id="gallery" class="gallery"></div>
+        <!-- HELP WANTED -->
+        <div id="view-help" class="tab-view">
+            <div class="panel-header">
+                <div id="help-stats" class="status-line" style="margin-bottom:0;">Loading...</div>
+            </div>
+            <div class="scroll-area">
+                <div class="section-title">Missing profile pictures - draw one!</div>
+                <div id="missing-list"></div>
+                <button id="missing-more" class="sys-btn center-btn" hidden>Show more</button>
+                <div class="section-title">Pending drawings - vote to publish</div>
+                <div id="pending-list"></div>
+                <div id="help-msg"></div>
+            </div>
+        </div>
+    </div>
 
-<div class="controls">
-    <button id="moreBtn" hidden>Show more</button>
-</div>
+    <!-- Pixel editor modal -->
+    <div id="editor-overlay" class="modal-overlay">
+        <div class="editor-box">
+            <div class="title-bar">
+                <div class="title-stripes"></div>
+                <div class="close-box" onclick="closeEditor()">X</div>
+                <span class="title-text">Draw: <span id="ed-name"></span></span>
+            </div>
+            <div class="editor-body">
+                <div class="ed-hint">16x16 pixels - tap or click (and drag) to paint.</div>
+                <canvas id="ed-canvas" width="320" height="320"></canvas>
+                <div id="ed-palette" class="palette"></div>
+                <input id="ed-artist" type="text" maxlength="30"
+                       placeholder="Your name (optional)" data-i18n-placeholder="app.artist">
+                <div class="btn-row">
+                    <button id="ed-undo" class="sys-btn" data-i18n="app.btn.undo">Undo</button>
+                    <button id="ed-clear" class="sys-btn" data-i18n="app.btn.clear">Clear</button>
+                    <button id="ed-submit" class="sys-btn" data-i18n="app.btn.submit">Submit</button>
+                    <button id="ed-cancel" class="sys-btn" data-i18n="app.btn.cancel">Cancel</button>
+                </div>
+                <div id="ed-error"></div>
+            </div>
+        </div>
+    </div>
 
 <script>
-    const gallery = document.getElementById('gallery');
-    const stats = document.getElementById('stats');
-    const searchInput = document.getElementById('search');
-    const moreBtn = document.getElementById('moreBtn');
+    // ReKindle Neighbourhood - Kindle-compatible (Chromium 75 / ES2019).
+    // No optional chaining, no nullish coalescing, no flexbox gap,
+    // no emojis, no alert()/confirm(), no animations.
 
-    const PROFILE_BASE = 'https://rekindle.ink/neighbourhood?uid=';
-    const PAGE_SIZE = 96;
+    var gallery = document.getElementById('dir-grid');
+    var dirStats = document.getElementById('dir-stats');
+    var searchInput = document.getElementById('search');
+    var dirMoreBtn = document.getElementById('dir-more');
+    var galGrid = document.getElementById('gal-grid');
+    var galStats = document.getElementById('gal-stats');
+    var missingList = document.getElementById('missing-list');
+    var missingMoreBtn = document.getElementById('missing-more');
+    var pendingList = document.getElementById('pending-list');
+    var helpStats = document.getElementById('help-stats');
+    var helpMsg = document.getElementById('help-msg');
+    var helpCount = document.getElementById('help-count');
+    var editorOverlay = document.getElementById('editor-overlay');
+    var edCanvas = document.getElementById('ed-canvas');
+    var edPalette = document.getElementById('ed-palette');
+    var edName = document.getElementById('ed-name');
+    var edArtist = document.getElementById('ed-artist');
+    var edError = document.getElementById('ed-error');
 
-    let allUsers = [];      // [{id, username, avatar}]
-    let filtered = [];
-    let shown = 0;
-    let searchTimer = null;
+    var PROFILE_BASE = 'https://rekindle.ink/neighbourhood?uid=';
+    var PAGE_SIZE = 60;
+    var VOTER = getVoterId();
+
+    var allUsers = [];
+    var filtered = [];
+    var shown = 0;
+    var searchTimer = null;
+    var avatarMap = new Map();
+    var missing = [];
+    var missingShown = 0;
+    var pendingSubs = [];
+    var THRESHOLD = 3;
+    var helpLoaded = false;
+
+    // ---- anonymous voter id (localStorage; volatile on Kindle, but that
+    //      only resets double-vote protection, never data) ----
+    function getVoterId() {
+        var id = null;
+        try { id = localStorage.getItem('rk_voter_id'); } catch (e) {}
+        if (!id) {
+            id = 'v' + Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+            try { localStorage.setItem('rk_voter_id', id); } catch (e) {}
+        }
+        return id;
+    }
+
+    // ---- tabs ----
+    function switchTab(name) {
+        var views = ['directory', 'gallery', 'help'];
+        for (var i = 0; i < views.length; i++) {
+            var v = views[i];
+            document.getElementById('view-' + v).className =
+                'tab-view' + (v === name ? ' active' : '');
+            document.getElementById('tabbtn-' + v).className =
+                'room-tab' + (v === name ? ' active' : '');
+        }
+        if (name === 'help' && !helpLoaded) {
+            helpLoaded = true;
+            loadHelp();
+        }
+    }
+
+    // ================= DIRECTORY =================
 
     function profileUrl(user) {
         return PROFILE_BASE + encodeURIComponent(user.id);
     }
 
     function placeholder(username) {
-        const div = document.createElement('div');
-        div.className = 'placeholder';
-        div.textContent = (username && username[0] || '?').toUpperCase();
+        var div = document.createElement('div');
+        div.className = 'ph';
+        var ch = (username && username.length > 0) ? username.charAt(0).toUpperCase() : '?';
+        div.textContent = ch;
         return div;
     }
 
     function card(user) {
-        const card = document.createElement('div');
-        card.className = 'card';
+        var a = document.createElement('a');
+        a.className = 'card';
+        a.href = profileUrl(user);
+        a.target = '_blank';   // remove for same-tab navigation
+        a.rel = 'noopener noreferrer';
 
         if (user.avatar) {
-            const img = document.createElement('img');
+            var img = document.createElement('img');
             img.src = user.avatar;
             img.alt = user.username;
-            img.onerror = function () { this.replaceWith(placeholder(user.username)); };
-            card.appendChild(img);
+            img.onerror = function () {
+                var ph = placeholder(user.username);
+                this.replaceWith(ph);
+            };
+            a.appendChild(img);
         } else {
-            card.appendChild(placeholder(user.username));
+            a.appendChild(placeholder(user.username));
         }
-
-        // username click → https://rekindle.ink/neighbourhood?uid=<id>
-        const name = document.createElement('div');
+        var name = document.createElement('div');
         name.className = 'name';
-        const link = document.createElement('a');
-        link.href = profileUrl(user);
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        link.textContent = user.username;
-        name.appendChild(link);
-        card.appendChild(name);
-
-        const uid = document.createElement('div');
+        name.textContent = user.username;
+        a.appendChild(name);
+        var uid = document.createElement('div');
         uid.className = 'uid';
         uid.textContent = user.id;
-        card.appendChild(uid);
-
-        return card;
+        a.appendChild(uid);
+        return a;
     }
 
     function renderMore() {
-        const slice = filtered.slice(shown, shown + PAGE_SIZE);
-        slice.forEach((u) => gallery.appendChild(card(u)));
-        shown += slice.length;
-        stats.textContent = allUsers.length === 0
-            ? 'No users in the database yet.'
-            : `Showing ${shown} of ${filtered.length} users` +
-              (filtered.length !== allUsers.length ? ` (filtered from ${allUsers.length})` : '');
-        moreBtn.hidden = shown >= filtered.length;
-        if (!moreBtn.hidden) {
-            moreBtn.textContent = `Show more (${filtered.length - shown} left)`;
+        var end = shown + PAGE_SIZE;
+        if (end > filtered.length) end = filtered.length;
+        for (var i = shown; i < end; i++) {
+            gallery.appendChild(card(filtered[i]));
         }
+        shown = end;
+        if (allUsers.length === 0) {
+            dirStats.textContent = 'No users in the database yet.';
+        } else {
+            dirStats.textContent = 'Showing ' + shown + ' of ' + filtered.length + ' users' +
+                (filtered.length !== allUsers.length
+                    ? ' (filtered from ' + allUsers.length + ')' : '');
+        }
+        dirMoreBtn.hidden = shown >= filtered.length;
     }
 
     function applyFilter(query) {
-        const q = query.trim().toLowerCase();
-        filtered = q
-            ? allUsers.filter((u) =>
-                u.username.toLowerCase().includes(q) ||
-                String(u.id).toLowerCase().includes(q))
-            : allUsers.slice();
+        var q = query.trim().toLowerCase();
+        var i, u;
+        if (!q) {
+            filtered = allUsers.slice();
+        } else {
+            filtered = [];
+            for (i = 0; i < allUsers.length; i++) {
+                u = allUsers[i];
+                if (u.username.toLowerCase().indexOf(q) !== -1 ||
+                    String(u.id).toLowerCase().indexOf(q) !== -1) {
+                    filtered.push(u);
+                }
+            }
+        }
         shown = 0;
-        gallery.innerHTML = '';
+        gallery.textContent = '';
         if (filtered.length === 0) {
-            gallery.innerHTML = '<div class="empty">No users match your search.</div>';
-            stats.textContent = allUsers.length
-                ? `0 of ${allUsers.length} users match "${query.trim()}".`
+            var empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = allUsers.length
+                ? 'No users match your search.'
                 : 'No users in the database yet.';
-            moreBtn.hidden = true;
+            gallery.appendChild(empty);
+            dirStats.textContent = allUsers.length
+                ? '0 of ' + allUsers.length + ' users match "' + query.trim() + '".'
+                : 'No users in the database yet.';
+            dirMoreBtn.hidden = true;
             return;
         }
         renderMore();
     }
 
-    async function load() {
-        stats.textContent = 'Loading users…';
-        const [usersRes, avatarsRes] = await Promise.all([
-            fetch('/users'),
-            fetch('/avatars').catch(() => null),
-        ]);
-        if (!usersRes.ok) throw new Error('HTTP ' + usersRes.status);
-        const users = await usersRes.json();
+    // ================= GALLERY =================
 
-        const avatarMap = new Map();
-        if (avatarsRes && avatarsRes.ok) {
-            (await avatarsRes.json()).forEach((a) => avatarMap.set(a.username, a.avatar));
+    function renderGalleryTab() {
+        var list = [];
+        avatarMap.forEach(function (v, k) { list.push({ username: k, base64: v }); });
+        if (list.length === 0) {
+            galStats.textContent = 'No avatars in the database yet.';
+            galGrid.textContent = '';
+            var empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = 'No avatars yet.';
+            galGrid.appendChild(empty);
+            return;
         }
-
-        allUsers = users.map((u) => ({
-            id: u.id,
-            username: u.username,
-            avatar: avatarMap.get(u.username) || null,
-        }));
-        applyFilter('');
+        galGrid.textContent = '';
+        for (var i = 0; i < list.length; i++) {
+            var item = list[i];
+            var div = document.createElement('div');
+            div.className = 'card';
+            div.style.textDecoration = 'none';
+            var img = document.createElement('img');
+            img.src = item.base64;
+            img.alt = item.username;
+            img.onerror = (function (un) {
+                return function () {
+                    var ph = placeholder(un);
+                    this.replaceWith(ph);
+                };
+            })(item.username);
+            div.appendChild(img);
+            var name = document.createElement('div');
+            name.className = 'name';
+            name.style.textDecoration = 'none';
+            name.textContent = item.username;
+            div.appendChild(name);
+            galGrid.appendChild(div);
+        }
+        galStats.textContent = 'Showing ' + list.length + ' avatars.';
     }
 
-    searchInput.addEventListener('input', () => {
-        clearTimeout(searchTimer);
-        searchTimer = setTimeout(() => applyFilter(searchInput.value), 150);
+    function parseCSV(text) {
+        var lines = text.split('\n');
+        var data = [];
+        for (var li = 1; li < lines.length; li++) {
+            if (!lines[li].trim()) continue;
+            var row = [];
+            var current = '';
+            var inQuotes = false;
+            var line = lines[li];
+            for (var ci = 0; ci < line.length; ci++) {
+                var ch = line.charAt(ci);
+                if (ch === '"') { inQuotes = !inQuotes; continue; }
+                if (ch === ',' && !inQuotes) { row.push(current.trim()); current = ''; continue; }
+                current += ch;
+            }
+            row.push(current.trim());
+            if (row.length >= 2) data.push({ username: row[0], base64: row[1] });
+        }
+        return data;
+    }
+
+    function handleFile(file) {
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            var data = parseCSV(e.target.result);
+            galGrid.textContent = '';
+            for (var i = 0; i < data.length; i++) {
+                var div = document.createElement('div');
+                div.className = 'card';
+                div.style.textDecoration = 'none';
+                var img = document.createElement('img');
+                img.src = data[i].base64;
+                img.alt = data[i].username;
+                div.appendChild(img);
+                var name = document.createElement('div');
+                name.className = 'name';
+                name.style.textDecoration = 'none';
+                name.textContent = data[i].username;
+                div.appendChild(name);
+                galGrid.appendChild(div);
+            }
+            galStats.textContent = 'Showing ' + data.length + ' avatars (local file).';
+        };
+        reader.readAsText(file);
+    }
+
+    var dropArea = document.getElementById('drop-area');
+    var galFile = document.getElementById('gal-file');
+    dropArea.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        dropArea.className = 'dragover';
+    });
+    dropArea.addEventListener('dragleave', function () {
+        dropArea.className = '';
+    });
+    dropArea.addEventListener('drop', function (e) {
+        e.preventDefault();
+        dropArea.className = '';
+        if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+    });
+    galFile.addEventListener('change', function () {
+        if (galFile.files.length > 0) handleFile(galFile.files[0]);
+    });
+    document.getElementById('gal-reload').addEventListener('click', function () {
+        loadDirectory();
     });
 
-    moreBtn.addEventListener('click', renderMore);
+    // ================= HELP WANTED =================
 
-    load().catch((err) => { stats.textContent = 'Could not load users: ' + err.message; });
+    function loadHelp() {
+        helpStats.textContent = 'Loading...';
+        var missingP = fetch('/missing-avatars').then(function (r) {
+            return r.ok ? r.json() : [];
+        }).catch(function () { return []; });
+        var subsP = fetch('/submissions?voter=' + encodeURIComponent(VOTER)).then(function (r) {
+            return r.ok ? r.json() : { submissions: [], threshold: 3 };
+        }).catch(function () { return { submissions: [], threshold: 3 }; });
+
+        Promise.all([missingP, subsP]).then(function (res) {
+            missing = res[0];
+            pendingSubs = (res[1] && res[1].submissions) || [];
+            THRESHOLD = (res[1] && res[1].threshold) || 3;
+            renderMissing(true);
+            renderPending();
+            helpStats.textContent = missing.length + ' user(s) missing a pfp - ' +
+                pendingSubs.length + ' drawing(s) pending';
+            helpCount.textContent = pendingSubs.length > 0
+                ? ' (' + pendingSubs.length + ')' : '';
+        }).catch(function (e) {
+            helpStats.textContent = 'Could not load: ' + e.message;
+        });
+    }
+
+    function renderMissing(reset) {
+        if (reset) {
+            missingShown = 0;
+            missingList.textContent = '';
+        }
+        if (missing.length === 0) {
+            missingList.textContent = '';
+            var none = document.createElement('div');
+            none.className = 'empty';
+            none.textContent = 'Everyone has a pfp. Nice work!';
+            missingList.appendChild(none);
+            missingMoreBtn.hidden = true;
+            return;
+        }
+        var end = missingShown + PAGE_SIZE;
+        if (end > missing.length) end = missing.length;
+        for (var i = missingShown; i < end; i++) {
+            missingList.appendChild(missingRow(missing[i]));
+        }
+        missingShown = end;
+        missingMoreBtn.hidden = missingShown >= missing.length;
+        if (!missingMoreBtn.hidden) {
+            missingMoreBtn.textContent = 'Show more (' + (missing.length - missingShown) + ' left)';
+        }
+    }
+
+    function missingRow(u) {
+        var row = document.createElement('div');
+        row.className = 'help-row';
+
+        var info = document.createElement('div');
+        info.className = 'help-info';
+        var name = document.createElement('div');
+        name.className = 'help-name';
+        name.textContent = u.username;
+        var uid = document.createElement('div');
+        uid.className = 'help-uid';
+        uid.textContent = u.id;
+        info.appendChild(name);
+        info.appendChild(uid);
+        row.appendChild(info);
+
+        if (u.pending > 0) {
+            var badge = document.createElement('span');
+            badge.className = 'pending-badge';
+            badge.textContent = u.pending + ' pending';
+            row.appendChild(badge);
+        }
+
+        var btn = document.createElement('button');
+        btn.className = 'sys-btn';
+        btn.textContent = 'DRAW';
+        btn.onclick = function () { openEditor(u); };
+        row.appendChild(btn);
+        return row;
+    }
+
+    function renderPending() {
+        pendingList.textContent = '';
+        if (pendingSubs.length === 0) {
+            var none = document.createElement('div');
+            none.className = 'empty';
+            none.textContent = 'No pending drawings. Be the first to help!';
+            pendingList.appendChild(none);
+            return;
+        }
+        for (var i = 0; i < pendingSubs.length; i++) {
+            pendingList.appendChild(subRow(pendingSubs[i]));
+        }
+    }
+
+    function subRow(s) {
+        var row = document.createElement('div');
+        row.className = 'sub-row';
+
+        var img = document.createElement('img');
+        img.src = s.image;
+        img.alt = s.username;
+        row.appendChild(img);
+
+        var info = document.createElement('div');
+        info.className = 'sub-info';
+        var forLine = document.createElement('div');
+        forLine.className = 'for';
+        forLine.textContent = 'for ' + s.username + ' - ' +
+            (s.artist ? 'by ' + s.artist : 'anonymous');
+        var votes = document.createElement('div');
+        votes.className = 'sub-votes';
+        votes.textContent = s.votes + ' / ' + THRESHOLD + ' votes';
+        info.appendChild(forLine);
+        info.appendChild(votes);
+        row.appendChild(info);
+
+        var btn = document.createElement('button');
+        btn.className = 'sys-btn';
+        if (s.own) {
+            btn.textContent = 'YOURS';
+            btn.disabled = true;
+        } else if (s.voted) {
+            btn.textContent = 'VOTED';
+            btn.disabled = true;
+        } else {
+            btn.textContent = 'VOTE';
+            btn.onclick = function () { castVote(s.id); };
+        }
+        row.appendChild(btn);
+        return row;
+    }
+
+    function castVote(id) {
+        helpMsg.textContent = 'Voting...';
+        fetch('/submissions/' + id + '/vote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voter: VOTER })
+        }).then(function (r) { return r.json(); }).then(function (data) {
+            if (data.error) {
+                helpMsg.textContent = data.error;
+                return;
+            }
+            if (data.published) {
+                helpMsg.textContent = 'Published! That pfp is now live for everyone.';
+                loadHelp();
+                loadDirectory();
+            } else {
+                helpMsg.textContent = data.message ||
+                    ('Vote counted: ' + data.votes + ' / ' + THRESHOLD);
+                loadHelp();
+            }
+        }).catch(function (e) {
+            helpMsg.textContent = 'Vote failed: ' + e.message;
+        });
+    }
+
+    // ================= PIXEL EDITOR =================
+
+    var CELL = 20;      // 16 cells * 20px = 320px canvas
+    var GRID_N = 16;
+    var PALETTE = [
+        '#000000', '#555555', '#888888', '#bbbbbb', '#ffffff',
+        '#8b0000', '#ff0000', '#8b4513', '#d2691e', '#ffa500',
+        '#daa520', '#ffff00', '#006400', '#228b22', '#32cd32',
+        '#008b8b', '#00ffff', '#00008b', '#1e90ff', '#00bfff',
+        '#4b0082', '#8a2be2', '#ff69b4', '#ff1493'
+    ];
+
+    var ed = {
+        userId: null, username: '', grid: [], history: [],
+        color: '#000000', painting: false
+    };
+
+    function openEditor(user) {
+        ed.userId = user.id;
+        ed.username = user.username;
+        ed.grid = new Array(GRID_N * GRID_N).fill('#ffffff');
+        ed.history = [];
+        ed.color = '#000000';
+        ed.painting = false;
+        edName.textContent = user.username;
+        edArtist.value = '';
+        edError.textContent = '';
+        buildPalette();
+        editorRedraw();
+        editorOverlay.style.display = 'flex';
+    }
+
+    function closeEditor() {
+        editorOverlay.style.display = 'none';
+    }
+
+    function buildPalette() {
+        edPalette.textContent = '';
+        for (var i = 0; i < PALETTE.length; i++) {
+            (function (color) {
+                var sw = document.createElement('div');
+                sw.className = 'swatch' + (color === ed.color ? ' selected' : '');
+                sw.style.background = color;
+                sw.onclick = function () {
+                    ed.color = color;
+                    var kids = edPalette.children;
+                    for (var j = 0; j < kids.length; j++) {
+                        kids[j].className = 'swatch';
+                    }
+                    sw.className = 'swatch selected';
+                };
+                edPalette.appendChild(sw);
+            })(PALETTE[i]);
+        }
+    }
+
+    function editorRedraw() {
+        var ctx = edCanvas.getContext('2d');
+        var x, y, i;
+        for (y = 0; y < GRID_N; y++) {
+            for (x = 0; x < GRID_N; x++) {
+                ctx.fillStyle = ed.grid[y * GRID_N + x];
+                ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+            }
+        }
+        ctx.strokeStyle = '#cccccc';
+        ctx.lineWidth = 1;
+        for (i = 0; i <= GRID_N; i++) {
+            ctx.beginPath();
+            ctx.moveTo(i * CELL + 0.5, 0);
+            ctx.lineTo(i * CELL + 0.5, GRID_N * CELL);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0, i * CELL + 0.5);
+            ctx.lineTo(GRID_N * CELL, i * CELL + 0.5);
+            ctx.stroke();
+        }
+    }
+
+    function editorCellAt(clientX, clientY) {
+        var rect = edCanvas.getBoundingClientRect();
+        var x = Math.floor((clientX - rect.left) / CELL);
+        var y = Math.floor((clientY - rect.top) / CELL);
+        if (x < 0 || y < 0 || x >= GRID_N || y >= GRID_N) return -1;
+        return y * GRID_N + x;
+    }
+
+    function pushHistory() {
+        ed.history.push(ed.grid.slice());
+        if (ed.history.length > 100) ed.history.shift();
+    }
+
+    function paintAt(clientX, clientY) {
+        var idx = editorCellAt(clientX, clientY);
+        if (idx >= 0 && ed.grid[idx] !== ed.color) {
+            ed.grid[idx] = ed.color;
+            editorRedraw();
+        }
+    }
+
+    // Mouse (desktop; taps also synthesize mousedown)
+    edCanvas.addEventListener('mousedown', function (e) {
+        e.preventDefault();
+        pushHistory();
+        ed.painting = true;
+        paintAt(e.clientX, e.clientY);
+    });
+    edCanvas.addEventListener('mousemove', function (e) {
+        if (ed.painting) paintAt(e.clientX, e.clientY);
+    });
+    document.addEventListener('mouseup', function () { ed.painting = false; });
+
+    // Touch (Kindle drag-painting; touch-action:none stops scrolling)
+    function touchPaint(e) {
+        if (!e.touches || e.touches.length === 0) return;
+        var t = e.touches[0];
+        paintAt(t.clientX, t.clientY);
+    }
+    edCanvas.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        pushHistory();
+        touchPaint(e);
+    }, { passive: false });
+    edCanvas.addEventListener('touchmove', function (e) {
+        e.preventDefault();
+        touchPaint(e);
+    }, { passive: false });
+
+    document.getElementById('ed-undo').addEventListener('click', function () {
+        if (ed.history.length === 0) return;
+        ed.grid = ed.history.pop();
+        editorRedraw();
+    });
+    document.getElementById('ed-clear').addEventListener('click', function () {
+        pushHistory();
+        ed.grid = new Array(GRID_N * GRID_N).fill('#ffffff');
+        editorRedraw();
+    });
+    document.getElementById('ed-cancel').addEventListener('click', closeEditor);
+
+    document.getElementById('ed-submit').addEventListener('click', function () {
+        var drawn = false;
+        for (var i = 0; i < ed.grid.length; i++) {
+            if (ed.grid[i] !== '#ffffff') { drawn = true; break; }
+        }
+        if (!drawn) {
+            edError.textContent = 'Draw something first - every cell is blank.';
+            return;
+        }
+        var image = edCanvas.toDataURL('image/png');
+        edError.textContent = 'Submitting...';
+        fetch('/submissions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: ed.userId,
+                image: image,
+                grid: ed.grid,
+                artist: edArtist.value.trim().substring(0, 30),
+                voter: VOTER
+            })
+        }).then(function (r) {
+            return r.json().then(function (d) { return { ok: r.ok, d: d }; });
+        }).then(function (res) {
+            if (!res.ok || (res.d && res.d.error)) {
+                edError.textContent = (res.d && res.d.error) ? res.d.error : 'Submit failed.';
+                return;
+            }
+            closeEditor();
+            helpMsg.textContent = 'Submitted for ' + ed.username + ' - needs ' +
+                (res.d.threshold || THRESHOLD) + ' vote(s) to publish.';
+            loadHelp();
+        }).catch(function (e) {
+            edError.textContent = 'Submit failed: ' + e.message;
+        });
+    });
+
+    // ================= DATA LOADING =================
+
+    function loadDirectory() {
+        dirStats.textContent = 'Loading users...';
+        fetch('/users').then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(function (users) {
+            var avatarsP = fetch('/avatars').then(function (r) {
+                return r.ok ? r.json() : null;
+            }).catch(function () { return null; });
+            avatarsP.then(function (avatars) {
+                avatarMap = new Map();
+                if (avatars) {
+                    for (var i = 0; i < avatars.length; i++) {
+                        avatarMap.set(avatars[i].username, avatars[i].avatar);
+                    }
+                }
+                allUsers = users.map(function (u) {
+                    return {
+                        id: u.id,
+                        username: u.username,
+                        avatar: avatarMap.get(u.username) || null
+                    };
+                });
+                applyFilter('');
+                renderGalleryTab();
+            });
+        }).catch(function (err) {
+            dirStats.textContent = 'Could not load users: ' + err.message;
+        });
+    }
+
+    searchInput.addEventListener('input', function () {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(function () {
+            applyFilter(searchInput.value);
+        }, 200);
+    });
+    dirMoreBtn.addEventListener('click', function () { renderMore(); });
+    missingMoreBtn.addEventListener('click', function () { renderMissing(false); });
+
+    loadDirectory();
 </script>
 
 </body>
