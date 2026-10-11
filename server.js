@@ -11,35 +11,45 @@
  *                  resp: {"status": "ok", "avatars_added": N}
  *
  *   - CORS is still wide open (Access-Control-Allow-Origin: *)
- *   - Users deduplicated by ID, avatars by username (first one wins)
+ *   - Users keyed by UID; RTDB usernames replace stored ones;
+ *     default (UID-prefix) usernames are never stored
+ *   - Avatars deduplicated by username (first one wins)
  *   - Storage in PostgreSQL (Neon) instead of CSV files
  *
  * Additions (new endpoints, they don't affect the POST API above):
- *   GET  /                    -> avatar viewer page (viewer.html)
+ *   POST /auth                -> the scraper script supplies Firebase tokens
+ *   GET  /                    -> avatar viewer page (index.html)
  *   GET  /avatars             -> JSON list of all avatars (used by the viewer)
  *   GET  /users               -> JSON list of all users
+ *   GET  /browse              -> user directory page (users.html)
  *   GET  /export/users.csv    -> old-format CSV backup of users
  *   GET  /export/avatars.csv  -> old-format CSV backup of avatars
  *   GET  /health              -> 200 OK
  *
  * Environment variables:
  *   DATABASE_URL  (required)  Neon/PostgreSQL connection string
+ *   AUTH_SECRET   (optional)  if set, POST /auth requires a matching X-Auth-Secret header
  *   PORT          (optional)  Render sets this automatically; defaults to 8765
  */
 
 const path = require('path');
 const express = require('express');
 const db = require('./db');
+const rtdb = require('./rtdb');        // FIX 1: was missing — rtdb was used
+                                       // below but never imported (the crash)
 
 const app = express();
 const PORT = process.env.PORT || 8765; // 8765 locally, same as before
-const VIEWER_HTML = path.join(__dirname, 'index.html');
+const VIEWER_HTML = path.join(__dirname, 'index.html');  // FIX 4: must match the real file name!
+const USERS_HTML = path.join(__dirname, 'users.html');   // FIX 3: directory page
 
 // --- CORS (same as the old server) ---
+// FIX 2: previous version set Allow-Headers twice (second call overwrote
+// the first, killing X-Auth-Secret) and had lost Allow-Origin entirely.
 app.use((req, res, next) => {
-    res.set('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Secret');
+    res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
-    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Secret');
     if (req.method === 'OPTIONS') return res.status(200).end(); // preflight
     next();
 });
@@ -120,6 +130,10 @@ app.get('/users', async (req, res) => {
     }
 });
 
+// FIX 3: GET /browse -> user directory (users.html). Clicking a username
+// opens https://rekindle.ink/neighbourhood?uid=<id>. /users stays the JSON API.
+app.get('/browse', (req, res) => res.sendFile(USERS_HTML));
+
 // --- POST /auth -> the scraper script supplies Firebase session tokens ---
 // The userscript runs on rekindle.ink while you're logged in and forwards
 // its tokens here, so the server never needs your password.
@@ -186,10 +200,10 @@ db.initDb()
         console.log("   📌 POST '/'        → add users (ID + username)");
         console.log("   📌 POST '/avatars' → add avatars (username + base64)");
         console.log("   🌐 GET  '/'        → avatar viewer");
-        console.log(`   🔥 RTDB username sync: ${rtdb.isAvailable() ? 'enabled' : 'disabled'}`);
+        console.log(`   🔥 RTDB username sync: ${rtdb.isAvailable() ? 'enabled' : 'awaiting scraper tokens'}`);
     });
     // Render sends SIGTERM on deploys/restarts — shut down cleanly
-    process.on('SIGTERM', () => server.close(() => process.exit(0)));
+    process.on('SIGTERM', () => server.close(() => process.exit(0));
 })
 .catch((err) => {
     console.error('Failed to initialize database:', err.message);
