@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReKindle Auto-Scraper & Auto-Scroll (Minimizable UI)
 // @namespace    http://tampermonkey.net/
-// @version      2.1
-// @description  Minimizable, draggable UI, persistent stats, targeted scrolling, RTDB auth, missing-pfp hunting, and content-deduped avatar versioning.
+// @version      2.2
+// @description  Minimizable, draggable UI, persistent stats, targeted scrolling, RTDB auth, missing-pfp hunting, avatar versioning, and profile-view capture.
 // @match        *://rekindle.ink/*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -29,15 +29,13 @@
     let autoScrollEnabled = false;
     let missingPfpMap = new Map();   // uid -> { id, username }
     let missingSyncOk = false;
+    let lastProfileUid = null;       // NEW: last uid passed to openUserProfile
 
     function getStoredUserMap() {
         try { return new Map(JSON.parse(GM_getValue('rk_sent_user_map', '[]'))); } catch (e) { return new Map(); }
     }
     function saveStoredUserMap(map) { GM_setValue('rk_sent_user_map', JSON.stringify(Array.from(map.entries()))); }
 
-    // NEW: username -> fingerprint of the last avatar data we sent, so the
-    // same pfp is never re-sent, while a CHANGED pfp flows through and
-    // becomes a new archived version on the server.
     function getStoredAvatarMap() {
         try { return new Map(JSON.parse(GM_getValue('rk_sent_avatar_map', '[]'))); } catch (e) { return new Map(); }
     }
@@ -47,8 +45,6 @@
     const persistentAvatarMap = getStoredAvatarMap();
 
     function avatarFingerprint(dataUrl) {
-        // djb2-style rolling hash + length: cheap, and enough to tell
-        // "same data" from "changed data" with negligible collision risk.
         let h = 5381;
         const len = dataUrl.length;
         for (let i = 0; i < len; i++) {
@@ -186,6 +182,125 @@
             map.set(uid, cleanName);
         }
     }
+
+    // =========================================================================
+    // NEW: profile-view capture.
+    // The neighbourhood page renders profile popups and the profile tab with
+    // stable IDs (#profile-modal / #popup-view-avatar / #popup-view-name and
+    // #view-profile / #profile-view-avatar / #profile-view-name). These
+    // canvases contain no openUserProfile onclick, so the generic scan could
+    // never link them to a user — we capture them directly.
+    // =========================================================================
+
+    const PROFILE_CANVAS_IDS = ['popup-view-avatar', 'profile-view-avatar', 'my-avatar'];
+
+    function elIsVisible(el) {
+        try {
+            return !!el && getComputedStyle(el).display !== 'none';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function currentUrlUid() {
+        try {
+            const m = location.search.match(/[?&]uid=([^&]+)/);
+            return m ? decodeURIComponent(m[1]) : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // card cache is uid -> { card: { username, ... } }; reverse it by username
+    function reverseUidLookup(name) {
+        try {
+            const cache = pageWindow.rekindleCardCache;
+            if (cache && name) {
+                for (const uid of Object.keys(cache)) {
+                    const item = cache[uid];
+                    if (item && item.card && item.card.username === name) return uid;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function uidNameMatches(uid, displayedName) {
+        // a hint uid is only trusted if its known name matches what's on screen
+        let known = null;
+        const m = missingPfpMap.get(uid);
+        if (m) known = m.username;
+        if (!known) {
+            try {
+                const cache = pageWindow.rekindleCardCache;
+                if (cache && cache[uid] && cache[uid].card && cache[uid].card.username) {
+                    known = cache[uid].card.username;
+                }
+            } catch (e) {}
+        }
+        return !known || known === displayedName;
+    }
+
+    function resolveProfileUid(displayedName) {
+        const byName = reverseUidLookup(displayedName);   // strongest: unique usernames
+        if (byName) return byName;
+        const candidates = [lastProfileUid, currentUrlUid()];
+        for (const uid of candidates) {
+            if (uid && uidNameMatches(uid, displayedName)) return uid;
+        }
+        return null;
+    }
+
+    function captureProfileCanvas(canvasId, nameElId, hostId, avatarsMap, usersMap) {
+        try {
+            const host = document.getElementById(hostId);
+            if (!host || !elIsVisible(host)) return;
+            const canvas = document.getElementById(canvasId);
+            const nameEl = document.getElementById(nameElId);
+            if (!canvas || !nameEl) return;
+
+            const displayed = cleanUsername(nameEl.textContent);
+            if (!displayed) return;   // profile still loading
+
+            const uid = resolveProfileUid(displayed);
+            let name = displayed;
+            if (uid && missingPfpMap.has(uid)) {
+                name = missingPfpMap.get(uid).username;   // server's RTDB-corrected name
+            }
+
+            const dataUrl = canvas.toDataURL('image/png');
+            if (!dataUrl || !dataUrl.startsWith('data:image/png')) return;
+            avatarsMap.set(name, dataUrl);
+            if (uid) addUserToMap(usersMap, uid, name);
+        } catch (e) {}
+    }
+
+    function captureProfileViews(avatarsMap, usersMap) {
+        // profile popup modal (opened by clicking a name anywhere)
+        captureProfileCanvas('popup-view-avatar', 'popup-view-name',
+                             'profile-modal', avatarsMap, usersMap);
+        // full profile view tab
+        captureProfileCanvas('profile-view-avatar', 'profile-view-name',
+                             'view-profile', avatarsMap, usersMap);
+    }
+
+    // NEW: best-effort hook so we know whose profile just opened
+    // (needs page-context write access; silently no-ops in strict sandboxes)
+    function tryPatchOpenUserProfile() {
+        try {
+            const orig = pageWindow.openUserProfile;
+            if (typeof orig === 'function' && !orig.__rkPatched) {
+                const patched = function (uid) {
+                    lastProfileUid = uid;
+                    return orig.apply(this, arguments);
+                };
+                patched.__rkPatched = true;
+                pageWindow.openUserProfile = patched;
+            }
+        } catch (e) {}
+    }
+
+    // =========================================================================
 
     function getScrollDirection() {
         const url = window.location.href.toLowerCase();
@@ -365,6 +480,8 @@
 
             setStatus('Scraping...', '#FFA500');
 
+            tryPatchOpenUserProfile();   // NEW: (re)apply the hook, idempotent
+
             const usersMap = new Map();
             const avatarsMap = new Map();
 
@@ -381,9 +498,14 @@
                 addUserToMap(usersMap, uid, nameNode.textContent);
             });
 
+            // NEW: profile popups / profile tab — the big gap this version fixes
+            captureProfileViews(avatarsMap, usersMap);
+
             document.querySelectorAll('.post-card, .user-card, .msg-row, .msg, .gallery-item, body, tr, div').forEach(container => {
                 const canvas = container.querySelector('canvas.avatar-canvas, canvas.msg-avatar, canvas');
                 if (!canvas) return;
+                // NEW: profile canvases are handled by captureProfileViews
+                if (PROFILE_CANVAS_IDS.indexOf(canvas.id) !== -1) return;
 
                 const userEl = container.querySelector('[onclick*="openUserProfile"]');
                 const uid = userEl ? extractUid(userEl.getAttribute('onclick')) : null;
@@ -432,9 +554,7 @@
                 }
             });
 
-            // NEW: only send avatars whose DATA we haven't sent before —
-            // identical pfps are skipped, changed pfps flow through and
-            // become new archived versions server-side.
+            // only send avatars whose DATA we haven't sent before
             const avatarPayload = [];
             avatarsMap.forEach((avatar, username) => {
                 const prevFp = persistentAvatarMap.get(username);
@@ -528,6 +648,8 @@
                 setStatus('Active', '#4CAF50');
             }
         });
+
+        tryPatchOpenUserProfile();   // NEW: hook as early as possible
 
         scheduleAuthSync();
         scheduleMissingSync();
