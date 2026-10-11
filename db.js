@@ -244,6 +244,33 @@ async function deleteUsers(uidList) {
     return res.rowCount ?? 0;
 }
 
+/**
+ * Full-database sweep: RTDB -> Postgres. Fixes default-named users where
+ * the RTDB has a real name, and refreshes every other username from the
+ * RTDB (catches renames). NEVER deletes anything — pruning stays a manual
+ * decision (repair-usernames.js --prune). Returns { users, updated, stillDefault }.
+ */
+async function syncUsernames() {
+  const users = await listUsers();
+  const rtdbMap = await rtdb.getUsernames(true); // fresh fetch, no cache
+  if (!rtdbMap) throw new Error('RTDB auth not available');
+
+  const targets = [];
+  let stillDefault = 0;
+  for (const u of users) {
+    const name = rtdbMap.get(u.id);
+    const fixable = typeof name === 'string' && !rtdb.looksLikeDefaultName(u.id, name);
+    const isJunk = rtdb.looksLikeDefaultName(u.id, u.username);
+    if (isJunk && !fixable) stillDefault++;          // no real name exists anywhere
+    if (fixable && name !== u.username) {
+      targets.push({ id: u.id, username: name });    // avatar rows follow renames
+    }
+  }
+
+  const result = targets.length ? await insertUsers(targets) : { written: 0 };
+  return { users: users.length, updated: result.written, stillDefault };
+}
+
 async function listUsers() {
     const { rows } = await withRetry(() =>
     getPool().query('SELECT username, user_id AS id FROM rekindle_users ORDER BY username'));
