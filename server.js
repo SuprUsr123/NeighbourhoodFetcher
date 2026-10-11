@@ -74,7 +74,7 @@ app.post('/', rawBody, async (req, res) => {
         `${result.replacedFromRtdb} replaced from RTDB, ` +
         `${result.skippedDefault} skipped (default usernames)`);
         res.json({ status: 'ok', users_added: result.written });   // <- API unchanged
-    } catch (err) { ... }
+    } catch (err) {
         console.error('Failed to store users:', err.message);
         res.status(500).json({ error: 'Database error' });
     }
