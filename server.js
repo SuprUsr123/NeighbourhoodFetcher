@@ -203,7 +203,7 @@ db.initDb()
         console.log(`   🔥 RTDB username sync: ${rtdb.isAvailable() ? 'enabled' : 'awaiting scraper tokens'}`);
     });
     // Render sends SIGTERM on deploys/restarts — shut down cleanly
-    process.on('SIGTERM', () => server.close(() => process.exit(0));
+    process.on('SIGTERM', () => server.close(() => process.exit(0)));
 })
 .catch((err) => {
     console.error('Failed to initialize database:', err.message);
