@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReKindle Auto-Scraper & Auto-Scroll (Minimizable UI)
 // @namespace    http://tampermonkey.net/
-// @version      1.9
-// @description  Minimizable, draggable UI, persistent stats, targeted scrolling, payload deduplication, and RTDB token authentication for the collector server.
+// @version      2.0
+// @description  Minimizable, draggable UI, persistent stats, targeted scrolling, payload deduplication, RTDB token authentication, and missing-pfp hunting.
 // @match        *://rekindle.ink/*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -18,187 +18,231 @@
     'use strict';
 
     const SERVER_URL = 'https://neighbourhoodfetcher.onrender.com';
-    const AUTH_SECRET = '';                 // must match AUTH_SECRET on Render ('' if unset)
-const AUTH_SYNC_INTERVAL_MS = 5 * 60 * 1000;
-const SCRAPE_INTERVAL_MS = 3000;
+    const AUTH_SECRET = '';                          // must match AUTH_SECRET on Render
+    const AUTH_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+    const MISSING_SYNC_INTERVAL_MS = 5 * 60 * 1000;  // NEW: missing-pfp hunt list refresh
+    const SCRAPE_INTERVAL_MS = 3000;
 
-const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
-let autoInterval = null;
-let autoScrollEnabled = false;
+    let autoInterval = null;
+    let autoScrollEnabled = false;
 
-function getStoredUserMap() {
-    try { return new Map(JSON.parse(GM_getValue('rk_sent_user_map', '[]'))); } catch (e) { return new Map(); }
-}
-function saveStoredUserMap(map) { GM_setValue('rk_sent_user_map', JSON.stringify(Array.from(map.entries()))); }
-function getStoredAvatarSet() {
-    try { return new Set(JSON.parse(GM_getValue('rk_sent_avatar_set', '[]'))); } catch (e) { return new Set(); }
-}
-function saveStoredAvatarSet(set) { GM_setValue('rk_sent_avatar_set', JSON.stringify(Array.from(set))); }
+    // NEW: uid -> { id, username } for users the server says have no pfp
+    let missingPfpMap = new Map();
+    let missingSyncOk = false;
 
-const persistentUserMap = getStoredUserMap();
-const persistentAvatarSet = getStoredAvatarSet();
+    function getStoredUserMap() {
+        try { return new Map(JSON.parse(GM_getValue('rk_sent_user_map', '[]'))); } catch (e) { return new Map(); }
+    }
+    function saveStoredUserMap(map) { GM_setValue('rk_sent_user_map', JSON.stringify(Array.from(map.entries()))); }
+    function getStoredAvatarSet() {
+        try { return new Set(JSON.parse(GM_getValue('rk_sent_avatar_set', '[]'))); } catch (e) { return new Set(); }
+    }
+    function saveStoredAvatarSet(set) { GM_setValue('rk_sent_avatar_set', JSON.stringify(Array.from(set))); }
 
-function safeParse(text) {
-    try { return JSON.parse(text); } catch (e) { return null; }
-}
+    const persistentUserMap = getStoredUserMap();
+    const persistentAvatarSet = getStoredAvatarSet();
 
-function postJSON(url, body, extraHeaders) {
-    const headers = Object.assign({ 'Content-Type': 'application/json' }, extraHeaders || {});
-    return new Promise((resolve, reject) => {
-        if (typeof GM_xmlhttpRequest !== 'undefined') {
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: url,
-                headers: headers,
-                data: JSON.stringify(body),
-                              timeout: 10000, // Render cold starts can be slow
-                              onload: (res) => (res.status >= 200 && res.status < 300) ? resolve(safeParse(res.responseText)) : reject(new Error(`HTTP ${res.status}`)),
-                              onerror: (err) => reject(err),
-                              ontimeout: () => reject(new Error('Timeout'))
+    function safeParse(text) {
+        try { return JSON.parse(text); } catch (e) { return null; }
+    }
+
+    function postJSON(url, body, extraHeaders) {
+        const headers = Object.assign({ 'Content-Type': 'application/json' }, extraHeaders || {});
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest !== 'undefined') {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: url,
+                    headers: headers,
+                    data: JSON.stringify(body),
+                    timeout: 10000,
+                    onload: (res) => (res.status >= 200 && res.status < 300) ? resolve(safeParse(res.responseText)) : reject(new Error(`HTTP ${res.status}`)),
+                    onerror: (err) => reject(err),
+                    ontimeout: () => reject(new Error('Timeout'))
+                });
+            } else {
+                fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body) })
+                  .then(res => res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`)))
+                  .then(t => resolve(safeParse(t)))
+                  .catch(reject);
+            }
+        });
+    }
+
+    // NEW: GET helper (same @connect host, no extra permissions needed)
+    function getJSON(url) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest !== 'undefined') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: url,
+                    timeout: 10000,
+                    onload: (res) => (res.status >= 200 && res.status < 300) ? resolve(safeParse(res.responseText)) : reject(new Error(`HTTP ${res.status}`)),
+                    onerror: (err) => reject(err),
+                    ontimeout: () => reject(new Error('Timeout'))
+                });
+            } else {
+                fetch(url)
+                  .then(res => res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`)))
+                  .then(t => resolve(safeParse(t)))
+                  .catch(reject);
+            }
+        });
+    }
+
+    function isPlaceholder(username, uid) {
+        if (!username || !uid || uid.length < 8) return false;
+        return username.toLowerCase().includes(uid.substring(0, 8).toLowerCase());
+    }
+
+    async function collectAuthTokens() {
+        const out = { mainToken: null, socialToken: null, authEntries: [] };
+        try {
+            const fb = pageWindow.firebase;
+            if (fb && Array.isArray(fb.apps)) {
+                for (const app of fb.apps) {
+                    try {
+                        const opts = app.options || app.options_ || {};
+                        const projectId = opts.projectId || '';
+                        if (projectId !== 'rekindle-dd1fa' && projectId !== 'rekindle-socials') continue;
+                        if (typeof app.auth !== 'function') continue;
+                        const user = app.auth().currentUser;
+                        if (!user) continue;
+                        const token = await user.getIdToken();
+                        if (projectId === 'rekindle-dd1fa') out.mainToken = token;
+                        else if (projectId === 'rekindle-socials') out.socialToken = token;
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.indexOf('firebase:authUser:') === 0) {
+                    out.authEntries.push({ key: key, value: localStorage.getItem(key) });
+                }
+            }
+        } catch (e) {}
+        return out;
+    }
+
+    // NEW: fetch the users the server says are missing pfps, so the scraper
+    // can hunt for their avatars specifically while you browse.
+    async function syncMissingPfps() {
+        const el = document.getElementById('rk-missing-count');
+        try {
+            const list = await getJSON(`${SERVER_URL}/missing-avatars`);
+            const map = new Map();
+            if (Array.isArray(list)) {
+                for (const u of list) {
+                    if (u && u.id && u.username) map.set(u.id, u);
+                }
+            }
+            missingPfpMap = map;
+            missingSyncOk = true;
+            if (el) el.textContent = String(map.size);
+        } catch (err) {
+            missingSyncOk = false;
+            if (el) el.textContent = '?';
+        }
+    }
+    function scheduleMissingSync() {
+        syncMissingPfps().finally(() => {
+            setTimeout(scheduleMissingSync, missingSyncOk ? MISSING_SYNC_INTERVAL_MS : 60 * 1000);
+        });
+    }
+
+    function cleanUsername(rawName) {
+        if (!rawName) return '';
+        return rawName.replace(/^DEV\s*/i, '').replace(/\bYou\b/g, '').trim();
+    }
+
+    function extractUid(onclickStr) {
+        if (!onclickStr) return null;
+        const match = onclickStr.match(/openUserProfile\s*\(\s*['"]([^'"]+)['"]/);
+        return match ? match[1] : null;
+    }
+
+    function addUserToMap(map, uid, username) {
+        if (!uid || !username) return;
+        const cleanName = cleanUsername(username);
+        if (!cleanName) return;
+        const existingName = map.get(uid);
+        if (!existingName) {
+            map.set(uid, cleanName);
+        } else if (isPlaceholder(existingName, uid) && !isPlaceholder(cleanName, uid)) {
+            map.set(uid, cleanName);
+        }
+    }
+
+    function getScrollDirection() {
+        const url = window.location.href.toLowerCase();
+        if (url.includes('kindlechat') || url.includes('topics')) return 'UP';
+        if (url.includes('neighbourhood')) return 'DOWN';
+        if (document.querySelector('.msg-row, b.author-name-field, .author-name-field')) return 'UP';
+        return 'DOWN';
+    }
+
+    function dispatchScrollEvents(element) {
+        try {
+            element.dispatchEvent(new Event('scroll', { bubbles: true }));
+            element.dispatchEvent(new Event('wheel', { bubbles: true }));
+        } catch (e) {}
+    }
+
+    function performAutoScroll(direction) {
+        if (!autoScrollEnabled) return;
+        const ignoreSelector = 'nav, aside, .sidebar, .topic-list, .topics-list, .topic-selector, .channel-list, .menu, [class*="sidebar"], [class*="topic"]';
+        const scrollables = Array.from(document.querySelectorAll('div, section, main, ul, body, html'))
+            .filter(el => {
+                if (el.matches(ignoreSelector) || el.closest(ignoreSelector)) return false;
+                if (el.scrollHeight <= el.clientHeight) return false;
+                const style = window.getComputedStyle(el);
+                return style.overflowY === 'scroll' || style.overflowY === 'auto';
             });
+        if (direction === 'UP') {
+            window.scrollTo({ top: 0, behavior: 'auto' });
+            dispatchScrollEvents(window);
+            scrollables.forEach(el => { el.scrollTop = 0; dispatchScrollEvents(el); });
         } else {
-            fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body) })
-            .then(res => res.ok ? res.text() : Promise.reject(new Error(`HTTP ${res.status}`)))
-            .then(t => resolve(safeParse(t)))
-            .catch(reject);
+            const bottom = document.documentElement.scrollHeight || document.body.scrollHeight;
+            window.scrollTo({ top: bottom, behavior: 'auto' });
+            dispatchScrollEvents(window);
+            scrollables.forEach(el => { el.scrollTop = el.scrollHeight; dispatchScrollEvents(el); });
         }
-    });
-}
-
-function isPlaceholder(username, uid) {
-    if (!username || !uid || uid.length < 8) return false;
-    return username.toLowerCase().includes(uid.substring(0, 8).toLowerCase());
-}
-
-// Collect auth tokens from this browser session:
-// 1. ID tokens from the page's Firebase (compat) apps, matched by projectId
-// 2. firebase:authUser:* localStorage entries (long-lived refresh tokens)
-async function collectAuthTokens() {
-    const out = { mainToken: null, socialToken: null, authEntries: [] };
-
-    try {
-        const fb = pageWindow.firebase;
-        if (fb && Array.isArray(fb.apps)) {
-            for (const app of fb.apps) {
-                try {
-                    const opts = app.options || app.options_ || {};
-                    const projectId = opts.projectId || '';
-                    if (projectId !== 'rekindle-dd1fa' && projectId !== 'rekindle-socials') continue;
-                    if (typeof app.auth !== 'function') continue;
-                    const user = app.auth().currentUser;
-                    if (!user) continue;
-                    const token = await user.getIdToken();
-                    if (projectId === 'rekindle-dd1fa') out.mainToken = token;
-                    else if (projectId === 'rekindle-socials') out.socialToken = token;
-                } catch (e) {}
-            }
-        }
-    } catch (e) {}
-
-    try {
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && key.indexOf('firebase:authUser:') === 0) {
-                out.authEntries.push({ key: key, value: localStorage.getItem(key) });
-            }
-        }
-    } catch (e) {}
-
-    return out;
-}
-
-function cleanUsername(rawName) {
-    if (!rawName) return '';
-    return rawName.replace(/^DEV\s*/i, '').replace(/\bYou\b/g, '').trim();
-}
-
-function extractUid(onclickStr) {
-    if (!onclickStr) return null;
-    const match = onclickStr.match(/openUserProfile\s*\(\s*['"]([^'"]+)['"]/);
-    return match ? match[1] : null;
-}
-
-function addUserToMap(map, uid, username) {
-    if (!uid || !username) return;
-    const cleanName = cleanUsername(username);
-    if (!cleanName) return;
-    const existingName = map.get(uid);
-    if (!existingName) {
-        map.set(uid, cleanName);
-    } else if (isPlaceholder(existingName, uid) && !isPlaceholder(cleanName, uid)) {
-        map.set(uid, cleanName);
     }
-}
 
-function getScrollDirection() {
-    const url = window.location.href.toLowerCase();
-    if (url.includes('kindlechat') || url.includes('topics')) return 'UP';
-    if (url.includes('neighbourhood')) return 'DOWN';
-    if (document.querySelector('.msg-row, b.author-name-field, .author-name-field')) return 'UP';
-    return 'DOWN';
-}
-
-function dispatchScrollEvents(element) {
-    try {
-        element.dispatchEvent(new Event('scroll', { bubbles: true }));
-        element.dispatchEvent(new Event('wheel', { bubbles: true }));
-    } catch (e) {}
-}
-
-function performAutoScroll(direction) {
-    if (!autoScrollEnabled) return;
-    const ignoreSelector = 'nav, aside, .sidebar, .topic-list, .topics-list, .topic-selector, .channel-list, .menu, [class*="sidebar"], [class*="topic"]';
-    const scrollables = Array.from(document.querySelectorAll('div, section, main, ul, body, html'))
-    .filter(el => {
-        if (el.matches(ignoreSelector) || el.closest(ignoreSelector)) return false;
-        if (el.scrollHeight <= el.clientHeight) return false;
-        const style = window.getComputedStyle(el);
-        return style.overflowY === 'scroll' || style.overflowY === 'auto';
-    });
-    if (direction === 'UP') {
-        window.scrollTo({ top: 0, behavior: 'auto' });
-        dispatchScrollEvents(window);
-        scrollables.forEach(el => { el.scrollTop = 0; dispatchScrollEvents(el); });
-    } else {
-        const bottom = document.documentElement.scrollHeight || document.body.scrollHeight;
-        window.scrollTo({ top: bottom, behavior: 'auto' });
-        dispatchScrollEvents(window);
-        scrollables.forEach(el => { el.scrollTop = el.scrollHeight; dispatchScrollEvents(el); });
-    }
-}
-
-const style = document.createElement('style');
-style.textContent = `
-#rk-archiver-ui { position: fixed !important; width: 260px !important;
-background: #181818 !important; color: #ffffff !important;
-font-family: monospace, monospace !important; font-size: 11px !important;
-border: 2px solid #4CAF50 !important; border-radius: 8px !important;
-padding: 10px 12px !important; z-index: 2147483647 !important;
-box-shadow: 0 4px 20px rgba(0,0,0,0.9) !important; transition: width 0.2s;
-user-select: none !important; }
-#rk-header { display: flex !important; justify-content: space-between !important;
-align-items: center !important; border-bottom: 1px solid #333 !important;
-padding-bottom: 4px !important; margin-bottom: 6px !important; cursor: move !important; }
-#rk-archiver-ui.minimized { width: auto !important; padding: 6px 10px !important; }
-#rk-archiver-ui.minimized #rk-header { border-bottom: none !important;
-padding-bottom: 0 !important; margin-bottom: 0 !important; }
-#rk-archiver-ui h3 { margin: 0 !important; font-size: 13px !important;
-color: #4CAF50 !important; border: none !important; padding: 0 !important;
-margin-right: 15px !important; pointer-events: none !important; }
-#rk-toggle-ui { cursor: pointer !important; color: #aaa !important;
-font-weight: bold !important; font-size: 14px !important; }
-#rk-toggle-ui:hover { color: #fff !important; }
-#rk-body p { margin: 3px 0 !important; color: #ccc !important; }
-.rk-status { font-weight: bold !important; color: #FFA500 !important; }
-.rk-dir { font-weight: bold !important; color: #00BCD4 !important; }
-.rk-btn { width: 100% !important; background: #2a2a2a !important; color: #fff !important;
-    border: 1px solid #444 !important; padding: 5px !important; margin-top: 5px !important;
-    cursor: pointer !important; border-radius: 4px !important; font-family: monospace !important; }
-    .rk-btn:hover { background: #3a3a3a !important; }
-    .rk-btn-active { background: #4CAF50 !important; color: #000 !important; font-weight: bold !important; }
-    .rk-btn-reset { background: #5a1a1a !important; border-color: #882222 !important; margin-top: 10px !important; }
-    .rk-btn-reset:hover { background: #7a2a2a !important; }
+    const style = document.createElement('style');
+    style.textContent = `
+        #rk-archiver-ui { position: fixed !important; width: 260px !important;
+            background: #181818 !important; color: #ffffff !important;
+            font-family: monospace, monospace !important; font-size: 11px !important;
+            border: 2px solid #4CAF50 !important; border-radius: 8px !important;
+            padding: 10px 12px !important; z-index: 2147483647 !important;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.9) !important; transition: width 0.2s;
+            user-select: none !important; }
+        #rk-header { display: flex !important; justify-content: space-between !important;
+            align-items: center !important; border-bottom: 1px solid #333 !important;
+            padding-bottom: 4px !important; margin-bottom: 6px !important; cursor: move !important; }
+        #rk-archiver-ui.minimized { width: auto !important; padding: 6px 10px !important; }
+        #rk-archiver-ui.minimized #rk-header { border-bottom: none !important;
+            padding-bottom: 0 !important; margin-bottom: 0 !important; }
+        #rk-archiver-ui h3 { margin: 0 !important; font-size: 13px !important;
+            color: #4CAF50 !important; border: none !important; padding: 0 !important;
+            margin-right: 15px !important; pointer-events: none !important; }
+        #rk-toggle-ui { cursor: pointer !important; color: #aaa !important;
+            font-weight: bold !important; font-size: 14px !important; }
+        #rk-toggle-ui:hover { color: #fff !important; }
+        #rk-body p { margin: 3px 0 !important; color: #ccc !important; }
+        .rk-status { font-weight: bold !important; color: #FFA500 !important; }
+        .rk-dir { font-weight: bold !important; color: #00BCD4 !important; }
+        .rk-btn { width: 100% !important; background: #2a2a2a !important; color: #fff !important;
+            border: 1px solid #444 !important; padding: 5px !important; margin-top: 5px !important;
+            cursor: pointer !important; border-radius: 4px !important; font-family: monospace !important; }
+        .rk-btn:hover { background: #3a3a3a !important; }
+        .rk-btn-active { background: #4CAF50 !important; color: #000 !important; font-weight: bold !important; }
     `;
     (document.head || document.documentElement).appendChild(style);
 
@@ -221,20 +265,20 @@ font-weight: bold !important; font-size: 14px !important; }
         }
 
         ui.innerHTML = `
-        <div id="rk-header">
-        <h3>ReKindle Archiver</h3>
-        <span id="rk-toggle-ui" title="Toggle UI">${isMinimized ? '[ + ]' : '[ - ]'}</span>
-        </div>
-        <div id="rk-body" style="display: ${isMinimized ? 'none' : 'block'};">
-        <p>Status: <span id="rk-status" class="rk-status">Initializing</span></p>
-        <p>Direction: <span id="rk-dir" class="rk-dir">${direction}</span></p>
-        <p>DOM Found: <span id="rk-found-count" style="color:#FFF;">0 U / 0 A</span></p>
-        <p>Unique Sent: <span id="rk-sent-count" style="color:#4CAF50;">${persistentUserMap.size} U / ${persistentAvatarSet.size} A</span></p>
-        <p>RTDB Auth: <span id="rk-auth-status" style="color:#FFA500;">Waiting&hellip;</span></p>
-        <button id="rk-btn-scroll" class="rk-btn rk-btn-active">Auto-Scroll: ON</button>
-        <button id="rk-btn-toggle" class="rk-btn rk-btn-active">Auto-Scrape: ON</button>
-        <button id="rk-btn-reset" class="rk-btn rk-btn-reset">Reset Stats</button>
-        </div>
+            <div id="rk-header">
+                <h3>ReKindle Archiver</h3>
+                <span id="rk-toggle-ui" title="Toggle UI">${isMinimized ? '[ + ]' : '[ - ]'}</span>
+            </div>
+            <div id="rk-body" style="display: ${isMinimized ? 'none' : 'block'};">
+                <p>Status: <span id="rk-status" class="rk-status">Initializing</span></p>
+                <p>Direction: <span id="rk-dir" class="rk-dir">${direction}</span></p>
+                <p>DOM Found: <span id="rk-found-count" style="color:#FFF;">0 U / 0 A</span></p>
+                <p>Unique Sent: <span id="rk-sent-count" style="color:#4CAF50;">${persistentUserMap.size} U / ${persistentAvatarSet.size} A</span></p>
+                <p>Missing pfps: <span id="rk-missing-count" style="color:#FFA500;">?</span></p>
+                <p>RTDB Auth: <span id="rk-auth-status" style="color:#FFA500;">Waiting&hellip;</span></p>
+                <button id="rk-btn-scroll" class="rk-btn rk-btn-active">Auto-Scroll: ON</button>
+                <button id="rk-btn-toggle" class="rk-btn rk-btn-active">Auto-Scrape: ON</button>
+            </div>
         `;
 
         (document.body || document.documentElement).appendChild(ui);
@@ -245,7 +289,6 @@ font-weight: bold !important; font-size: 14px !important; }
         const sentCountEl = document.getElementById('rk-sent-count');
         const btnScroll = document.getElementById('rk-btn-scroll');
         const btnToggle = document.getElementById('rk-btn-toggle');
-        const btnReset = document.getElementById('rk-btn-reset');
         const btnToggleUI = document.getElementById('rk-toggle-ui');
         const bodyUI = document.getElementById('rk-body');
 
@@ -314,6 +357,7 @@ font-weight: bold !important; font-size: 14px !important; }
 
             const usersMap = new Map();
             const avatarsMap = new Map();
+            const retryAvatarsMap = new Map(); // NEW: missing-pfp users (always sent)
 
             if (pageWindow.rekindleCardCache) {
                 Object.entries(pageWindow.rekindleCardCache).forEach(([uid, item]) => {
@@ -330,12 +374,30 @@ font-weight: bold !important; font-size: 14px !important; }
 
             document.querySelectorAll('.post-card, .user-card, .msg-row, .msg, .gallery-item, body, tr, div').forEach(container => {
                 const canvas = container.querySelector('canvas.avatar-canvas, canvas.msg-avatar, canvas');
-                if (!canvas || canvas.dataset.rkProcessed === 'true') return;
+                if (!canvas) return;
+
                 const userEl = container.querySelector('[onclick*="openUserProfile"]');
+                const uid = userEl ? extractUid(userEl.getAttribute('onclick')) : null;
+
+                // NEW: targeted hunt — if the server says this user has no pfp,
+                // capture the canvas even if it was processed before, and store
+                // it under the SERVER's (RTDB-corrected) username.
+                const missingEntry = uid ? missingPfpMap.get(uid) : null;
+                if (missingEntry) {
+                    try {
+                        const dataUrl = canvas.toDataURL('image/png');
+                        if (dataUrl && dataUrl.startsWith('data:image/png')) {
+                            retryAvatarsMap.set(missingEntry.username, dataUrl);
+                            canvas.dataset.rkProcessed = 'true';
+                        }
+                    } catch (err) {}
+                    return;
+                }
+
+                if (canvas.dataset.rkProcessed === 'true') return;
+
                 let username = null;
-                let uid = null;
                 if (userEl) {
-                    uid = extractUid(userEl.getAttribute('onclick'));
                     if (uid && usersMap.has(uid)) {
                         username = usersMap.get(uid);
                     } else {
@@ -343,6 +405,7 @@ font-weight: bold !important; font-size: 14px !important; }
                         username = cleanUsername(nameNode.textContent);
                     }
                 }
+
                 if (username && (!uid || !isPlaceholder(username, uid))) {
                     try {
                         const dataUrl = canvas.toDataURL('image/png');
@@ -362,14 +425,20 @@ font-weight: bold !important; font-size: 14px !important; }
                 }
             });
 
+            // NEW: missing-pfp avatars are always sent (the server's list is
+            // the source of truth, so it overrides local dedup); normal
+            // avatars still respect persistentAvatarSet.
             const avatarPayload = [];
+            retryAvatarsMap.forEach((avatar, username) => {
+                avatarPayload.push({ username, avatar });
+            });
             avatarsMap.forEach((avatar, username) => {
-                if (!persistentAvatarSet.has(username)) {
+                if (!persistentAvatarSet.has(username) && !retryAvatarsMap.has(username)) {
                     avatarPayload.push({ username, avatar });
                 }
             });
 
-            foundCountEl.textContent = `${usersMap.size} U / ${avatarsMap.size} A`;
+            foundCountEl.textContent = `${usersMap.size} U / ${avatarsMap.size + retryAvatarsMap.size} A`;
 
             let hasError = false;
 
@@ -386,6 +455,8 @@ font-weight: bold !important; font-size: 14px !important; }
                     await postJSON(`${SERVER_URL}/avatars`, avatarPayload);
                     avatarPayload.forEach(a => persistentAvatarSet.add(a.username));
                     saveStoredAvatarSet(persistentAvatarSet);
+                    // NEW: the users we just fixed drop out of the hunt list
+                    // on the next sync (every 5 min)
                 } catch (err) { hasError = true; }
             }
 
@@ -400,8 +471,7 @@ font-weight: bold !important; font-size: 14px !important; }
             }
         }
 
-        // Forward this session's Firebase tokens to the server, so it can
-        // read the RTDB as you (the ilovekindle env account is the fallback).
+        // Forward this session's Firebase tokens to the server
         let authOk = false;
         async function syncAuth() {
             const el = document.getElementById('rk-auth-status');
@@ -457,18 +527,13 @@ font-weight: bold !important; font-size: 14px !important; }
             }
         });
 
-        btnReset.addEventListener('click', () => {
-            if (confirm('Reset stored archiver stats?')) {
-                persistentUserMap.clear();
-                persistentAvatarSet.clear();
-                saveStoredUserMap(persistentUserMap);
-                saveStoredAvatarSet(persistentAvatarSet);
-                sentCountEl.textContent = `0 U / 0 A`;
-                setStatus('Stats Reset', '#FFA500');
-            }
-        });
+        // REMOVED: the "Reset Stats"/"Delete Data" button and its confirm()
+        // handler — local dedup state is now only editable via Tampermonkey's
+        // storage (rk_sent_user_map / rk_sent_avatar_set), which is fine
+        // because the server's missing-pfp list overrides it anyway.
 
         scheduleAuthSync();
+        scheduleMissingSync();   // NEW: start the missing-pfp hunt list
         scrapeAndSync();
         autoInterval = setInterval(scrapeAndSync, SCRAPE_INTERVAL_MS);
     }
