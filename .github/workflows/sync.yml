@@ -1,0 +1,10 @@
+# .github/workflows/sync.yml
+name: RTDB sync
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # every 6 hours
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS -X POST https://neighbourhoodfetcher.onrender.com/admin/sync
