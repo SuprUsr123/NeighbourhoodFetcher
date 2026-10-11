@@ -14,7 +14,7 @@
             --stripe-pattern: repeating-linear-gradient(0deg, transparent, transparent 2px, #000 3px, #000 4px);
         }
 
-        /* ---- Environment ---- */
+        /* ---- Environment (the "desktop") ---- */
         body {
             background-color: #e5e5e5;
             font-family: "Geneva", "Verdana", sans-serif;
@@ -22,7 +22,7 @@
             margin: 0;
             height: 100vh;
             overflow: hidden;
-            display: flex;
+            display: flex;             /* centering only - NO gap used */
             align-items: center;
             justify-content: center;
         }
@@ -35,12 +35,12 @@
             width: 95%;
             max-width: 620px;
             height: 92vh;
-            display: flex;
+            display: flex;             /* column layout - NO gap used */
             flex-direction: column;
             position: relative;
         }
 
-        /* ---- Title bar ---- */
+        /* ---- Title bar (striped System 7 look) ---- */
         .title-bar {
             height: 35px;
             border-bottom: 2px solid black;
@@ -159,7 +159,7 @@
             min-height: 0;
         }
 
-        /* ---- Panel headers / buttons ---- */
+        /* ---- Panel headers / buttons / inputs ---- */
         .panel-header {
             border-bottom: 2px solid black;
             background: #eee;
@@ -201,6 +201,21 @@
         .sys-btn:disabled { opacity: 0.5; cursor: default; }
         .btn-row { display: flex; align-items: center; }
         .btn-row .sys-btn + .sys-btn { margin-left: 8px; }
+
+        /* Gallery date dropdown */
+        #gal-date {
+            border: 2px solid black;
+            border-radius: 0;
+            background: white;
+            font-family: inherit;
+            font-size: 0.85rem;
+            padding: 8px;
+            height: 44px;
+            box-sizing: border-box;
+            flex: 1 1 auto;
+            min-width: 0;
+            margin-right: 8px;
+        }
 
         /* ---- Card grids (CSS Grid: gap IS allowed here) ---- */
         .grid-cards {
@@ -253,20 +268,6 @@
             color: #666;
         }
         #drop-area.dragover { border-color: black; background: #e0e0e0; }
-
-        #gal-date {
-            border: 2px solid black;
-            border-radius: 0;
-            background: white;
-            font-family: inherit;
-            font-size: 0.85rem;
-            padding: 8px;
-            height: 44px;
-            box-sizing: border-box;
-            flex: 1 1 auto;
-            min-width: 0;
-            margin-right: 8px;
-        }
 
         /* ---- HELP WANTED lists ---- */
         .section-title {
@@ -337,7 +338,7 @@
         .palette {
             display: grid;
             grid-template-columns: repeat(8, 1fr);
-            gap: 4px;
+            gap: 4px;   /* GRID gap: allowed */
             margin-bottom: 10px;
         }
         .swatch {
@@ -415,6 +416,7 @@
             <div class="panel-header">
                 <div id="gal-stats" class="status-line">No avatars loaded.</div>
                 <div class="btn-row">
+                    <select id="gal-date" title="View avatars as archived on a date"></select>
                     <button id="gal-reload" class="sys-btn" data-i18n="app.btn.reload">Reload</button>
                     <button class="sys-btn" onclick="window.location.href='/export/avatars.csv'"
                             data-i18n="app.btn.download_csv">Download CSV</button>
@@ -456,7 +458,7 @@
                 <span class="title-text">Draw: <span id="ed-name"></span></span>
             </div>
             <div class="editor-body">
-                <div class="ed-hint">16x16 pixels - tap or click (and drag) to paint.</div>
+                <div class="ed-hint">16x16 pixels - grayscale - tap or click (and drag) to paint.</div>
                 <canvas id="ed-canvas" width="320" height="320"></canvas>
                 <div id="ed-palette" class="palette"></div>
                 <input id="ed-artist" type="text" maxlength="30"
@@ -483,6 +485,7 @@
     var dirMoreBtn = document.getElementById('dir-more');
     var galGrid = document.getElementById('gal-grid');
     var galStats = document.getElementById('gal-stats');
+    var galDateSelect = document.getElementById('gal-date');
     var missingList = document.getElementById('missing-list');
     var missingMoreBtn = document.getElementById('missing-more');
     var pendingList = document.getElementById('pending-list');
@@ -510,9 +513,9 @@
     var pendingSubs = [];
     var THRESHOLD = 3;
     var helpLoaded = false;
+    var galViewDate = '';   // '' = latest/current; otherwise YYYY-MM-DD
 
-    // ---- anonymous voter id (localStorage; volatile on Kindle, but that
-    //      only resets double-vote protection, never data) ----
+    // ---- anonymous voter id ----
     function getVoterId() {
         var id = null;
         try { id = localStorage.getItem('rk_voter_id'); } catch (e) {}
@@ -633,47 +636,7 @@
         renderMore();
     }
 
-    // ================= GALLERY =================
-
-    function renderGalleryTab() {
-        var list = [];
-        avatarMap.forEach(function (v, k) { list.push({ username: k, base64: v }); });
-        if (list.length === 0) {
-            galStats.textContent = 'No avatars in the database yet.';
-            galGrid.textContent = '';
-            var empty = document.createElement('div');
-            empty.className = 'empty';
-            empty.textContent = 'No avatars yet.';
-            galGrid.appendChild(empty);
-            return;
-        }
-        galGrid.textContent = '';
-        for (var i = 0; i < list.length; i++) {
-            var item = list[i];
-            var div = document.createElement('div');
-            div.className = 'card';
-            div.style.textDecoration = 'none';
-            var img = document.createElement('img');
-            img.src = item.base64;
-            img.alt = item.username;
-            img.onerror = (function (un) {
-                return function () {
-                    var ph = placeholder(un);
-                    this.replaceWith(ph);
-                };
-            })(item.username);
-            div.appendChild(img);
-            var name = document.createElement('div');
-            name.className = 'name';
-            name.style.textDecoration = 'none';
-            name.textContent = item.username;
-            div.appendChild(name);
-            galGrid.appendChild(div);
-        }
-        galStats.textContent = 'Showing ' + list.length + ' avatars.';
-    }
-
-        var galViewDate = '';   // '' = latest/current
+    // ================= GALLERY (with date archive dropdown) =================
 
     function galleryCard(username, base64) {
         var div = document.createElement('div');
@@ -739,25 +702,28 @@
         fetch('/avatar-dates').then(function (r) {
             return r.ok ? r.json() : [];
         }).then(function (dates) {
-            var sel = document.getElementById('gal-date');
-            while (sel.firstChild) sel.removeChild(sel.firstChild);
+            while (galDateSelect.firstChild) galDateSelect.removeChild(galDateSelect.firstChild);
             var latest = document.createElement('option');
             latest.value = '';
             latest.textContent = 'Latest (current)';
-            sel.appendChild(latest);
+            galDateSelect.appendChild(latest);
             for (var i = 0; i < dates.length; i++) {
                 var opt = document.createElement('option');
                 opt.value = dates[i].date;
                 opt.textContent = dates[i].date + ' (' + dates[i].count + ')';
-                sel.appendChild(opt);
+                galDateSelect.appendChild(opt);
             }
         }).catch(function () {});
     }
 
-    document.getElementById('gal-date').addEventListener('change', function () {
-        galViewDate = this.value;
-        loadGalleryView();
-    });
+    // THIS is where the listener lives - with the element guaranteed to exist
+    // above (the <select id="gal-date"> in the Gallery tab's btn-row).
+    if (galDateSelect) {
+        galDateSelect.addEventListener('change', function () {
+            galViewDate = this.value;
+            loadGalleryView();
+        });
+    }
 
     function parseCSV(text) {
         var lines = text.split('\n');
@@ -784,23 +750,11 @@
         var reader = new FileReader();
         reader.onload = function (e) {
             var data = parseCSV(e.target.result);
-            galGrid.textContent = '';
+            var list = [];
             for (var i = 0; i < data.length; i++) {
-                var div = document.createElement('div');
-                div.className = 'card';
-                div.style.textDecoration = 'none';
-                var img = document.createElement('img');
-                img.src = data[i].base64;
-                img.alt = data[i].username;
-                div.appendChild(img);
-                var name = document.createElement('div');
-                name.className = 'name';
-                name.style.textDecoration = 'none';
-                name.textContent = data[i].username;
-                div.appendChild(name);
-                galGrid.appendChild(div);
+                list.push({ username: data[i].username, base64: data[i].base64 });
             }
-            galStats.textContent = 'Showing ' + data.length + ' avatars (local file).';
+            renderGalleryList(list, '');
         };
         reader.readAsText(file);
     }
@@ -1188,6 +1142,8 @@
                     };
                 });
                 applyFilter('');
+                // only re-render the gallery from directory data when the
+                // "Latest" view is active; a chosen archive date stays put
                 if (!galViewDate) {
                     var galList = [];
                     avatarMap.forEach(function (v, k) {
