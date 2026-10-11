@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReKindle Auto-Scraper & Auto-Scroll (Minimizable UI)
 // @namespace    http://tampermonkey.net/
-// @version      2.0
-// @description  Minimizable, draggable UI, persistent stats, targeted scrolling, payload deduplication, RTDB token authentication, and missing-pfp hunting.
+// @version      2.1
+// @description  Minimizable, draggable UI, persistent stats, targeted scrolling, RTDB auth, missing-pfp hunting, and content-deduped avatar versioning.
 // @match        *://rekindle.ink/*
 // @run-at       document-end
 // @grant        GM_xmlhttpRequest
@@ -18,31 +18,44 @@
     'use strict';
 
     const SERVER_URL = 'https://neighbourhoodfetcher.onrender.com';
-    const AUTH_SECRET = '';                          // must match AUTH_SECRET on Render
+    const AUTH_SECRET = '';
     const AUTH_SYNC_INTERVAL_MS = 5 * 60 * 1000;
-    const MISSING_SYNC_INTERVAL_MS = 5 * 60 * 1000;  // NEW: missing-pfp hunt list refresh
+    const MISSING_SYNC_INTERVAL_MS = 5 * 60 * 1000;
     const SCRAPE_INTERVAL_MS = 3000;
 
     const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
     let autoInterval = null;
     let autoScrollEnabled = false;
-
-    // NEW: uid -> { id, username } for users the server says have no pfp
-    let missingPfpMap = new Map();
+    let missingPfpMap = new Map();   // uid -> { id, username }
     let missingSyncOk = false;
 
     function getStoredUserMap() {
         try { return new Map(JSON.parse(GM_getValue('rk_sent_user_map', '[]'))); } catch (e) { return new Map(); }
     }
     function saveStoredUserMap(map) { GM_setValue('rk_sent_user_map', JSON.stringify(Array.from(map.entries()))); }
-    function getStoredAvatarSet() {
-        try { return new Set(JSON.parse(GM_getValue('rk_sent_avatar_set', '[]'))); } catch (e) { return new Set(); }
+
+    // NEW: username -> fingerprint of the last avatar data we sent, so the
+    // same pfp is never re-sent, while a CHANGED pfp flows through and
+    // becomes a new archived version on the server.
+    function getStoredAvatarMap() {
+        try { return new Map(JSON.parse(GM_getValue('rk_sent_avatar_map', '[]'))); } catch (e) { return new Map(); }
     }
-    function saveStoredAvatarSet(set) { GM_setValue('rk_sent_avatar_set', JSON.stringify(Array.from(set))); }
+    function saveStoredAvatarMap(map) { GM_setValue('rk_sent_avatar_map', JSON.stringify(Array.from(map.entries()))); }
 
     const persistentUserMap = getStoredUserMap();
-    const persistentAvatarSet = getStoredAvatarSet();
+    const persistentAvatarMap = getStoredAvatarMap();
+
+    function avatarFingerprint(dataUrl) {
+        // djb2-style rolling hash + length: cheap, and enough to tell
+        // "same data" from "changed data" with negligible collision risk.
+        let h = 5381;
+        const len = dataUrl.length;
+        for (let i = 0; i < len; i++) {
+            h = ((h << 5) + h + dataUrl.charCodeAt(i)) | 0;
+        }
+        return len + ':' + (h >>> 0).toString(16);
+    }
 
     function safeParse(text) {
         try { return JSON.parse(text); } catch (e) { return null; }
@@ -71,7 +84,6 @@
         });
     }
 
-    // NEW: GET helper (same @connect host, no extra permissions needed)
     function getJSON(url) {
         return new Promise((resolve, reject) => {
             if (typeof GM_xmlhttpRequest !== 'undefined') {
@@ -128,8 +140,6 @@
         return out;
     }
 
-    // NEW: fetch the users the server says are missing pfps, so the scraper
-    // can hunt for their avatars specifically while you browse.
     async function syncMissingPfps() {
         const el = document.getElementById('rk-missing-count');
         try {
@@ -273,7 +283,7 @@
                 <p>Status: <span id="rk-status" class="rk-status">Initializing</span></p>
                 <p>Direction: <span id="rk-dir" class="rk-dir">${direction}</span></p>
                 <p>DOM Found: <span id="rk-found-count" style="color:#FFF;">0 U / 0 A</span></p>
-                <p>Unique Sent: <span id="rk-sent-count" style="color:#4CAF50;">${persistentUserMap.size} U / ${persistentAvatarSet.size} A</span></p>
+                <p>Unique Sent: <span id="rk-sent-count" style="color:#4CAF50;">${persistentUserMap.size} U / ${persistentAvatarMap.size} A</span></p>
                 <p>Missing pfps: <span id="rk-missing-count" style="color:#FFA500;">?</span></p>
                 <p>RTDB Auth: <span id="rk-auth-status" style="color:#FFA500;">Waiting&hellip;</span></p>
                 <button id="rk-btn-scroll" class="rk-btn rk-btn-active">Auto-Scroll: ON</button>
@@ -357,7 +367,6 @@
 
             const usersMap = new Map();
             const avatarsMap = new Map();
-            const retryAvatarsMap = new Map(); // NEW: missing-pfp users (always sent)
 
             if (pageWindow.rekindleCardCache) {
                 Object.entries(pageWindow.rekindleCardCache).forEach(([uid, item]) => {
@@ -379,15 +388,13 @@
                 const userEl = container.querySelector('[onclick*="openUserProfile"]');
                 const uid = userEl ? extractUid(userEl.getAttribute('onclick')) : null;
 
-                // NEW: targeted hunt — if the server says this user has no pfp,
-                // capture the canvas even if it was processed before, and store
-                // it under the SERVER's (RTDB-corrected) username.
+                // missing-pfp hunt: capture under the SERVER's username
                 const missingEntry = uid ? missingPfpMap.get(uid) : null;
                 if (missingEntry) {
                     try {
                         const dataUrl = canvas.toDataURL('image/png');
                         if (dataUrl && dataUrl.startsWith('data:image/png')) {
-                            retryAvatarsMap.set(missingEntry.username, dataUrl);
+                            avatarsMap.set(missingEntry.username, dataUrl);
                             canvas.dataset.rkProcessed = 'true';
                         }
                     } catch (err) {}
@@ -425,20 +432,18 @@
                 }
             });
 
-            // NEW: missing-pfp avatars are always sent (the server's list is
-            // the source of truth, so it overrides local dedup); normal
-            // avatars still respect persistentAvatarSet.
+            // NEW: only send avatars whose DATA we haven't sent before —
+            // identical pfps are skipped, changed pfps flow through and
+            // become new archived versions server-side.
             const avatarPayload = [];
-            retryAvatarsMap.forEach((avatar, username) => {
-                avatarPayload.push({ username, avatar });
-            });
             avatarsMap.forEach((avatar, username) => {
-                if (!persistentAvatarSet.has(username) && !retryAvatarsMap.has(username)) {
+                const prevFp = persistentAvatarMap.get(username);
+                if (!prevFp || prevFp !== avatarFingerprint(avatar)) {
                     avatarPayload.push({ username, avatar });
                 }
             });
 
-            foundCountEl.textContent = `${usersMap.size} U / ${avatarsMap.size + retryAvatarsMap.size} A`;
+            foundCountEl.textContent = `${usersMap.size} U / ${avatarsMap.size} A`;
 
             let hasError = false;
 
@@ -453,14 +458,12 @@
             if (avatarPayload.length > 0) {
                 try {
                     await postJSON(`${SERVER_URL}/avatars`, avatarPayload);
-                    avatarPayload.forEach(a => persistentAvatarSet.add(a.username));
-                    saveStoredAvatarSet(persistentAvatarSet);
-                    // NEW: the users we just fixed drop out of the hunt list
-                    // on the next sync (every 5 min)
+                    avatarPayload.forEach(a => persistentAvatarMap.set(a.username, avatarFingerprint(a.avatar)));
+                    saveStoredAvatarMap(persistentAvatarMap);
                 } catch (err) { hasError = true; }
             }
 
-            sentCountEl.textContent = `${persistentUserMap.size} U / ${persistentAvatarSet.size} A`;
+            sentCountEl.textContent = `${persistentUserMap.size} U / ${persistentAvatarMap.size} A`;
 
             if (hasError) {
                 setStatus('Server Conn Fail', '#F44336');
@@ -471,7 +474,6 @@
             }
         }
 
-        // Forward this session's Firebase tokens to the server
         let authOk = false;
         async function syncAuth() {
             const el = document.getElementById('rk-auth-status');
@@ -527,13 +529,8 @@
             }
         });
 
-        // REMOVED: the "Reset Stats"/"Delete Data" button and its confirm()
-        // handler — local dedup state is now only editable via Tampermonkey's
-        // storage (rk_sent_user_map / rk_sent_avatar_set), which is fine
-        // because the server's missing-pfp list overrides it anyway.
-
         scheduleAuthSync();
-        scheduleMissingSync();   // NEW: start the missing-pfp hunt list
+        scheduleMissingSync();
         scrapeAndSync();
         autoInterval = setInterval(scrapeAndSync, SCRAPE_INTERVAL_MS);
     }

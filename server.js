@@ -2,30 +2,22 @@
 /**
  * ReKindle Data Collector Server — Render + Neon edition (Node.js).
  *
- * Collector API (unchanged from the original Python server):
- *   POST /         body: [{"id": "...", "username": "..."}]  -> {"users_added": N}
- *   POST /avatars  body: [{"username": "...", "avatar": "..."}] -> {"avatars_added": N}
+ * Collector API (unchanged):
+ *   POST /         -> add users        {"users_added": N}
+ *   POST /avatars  -> add avatars      {"avatars_added": N} (new or CHANGED only)
  *
- * Additional endpoints:
- *   POST /auth                 -> scraper supplies Firebase session tokens
- *   POST /admin/sync           -> force a full RTDB -> DB username sync
+ * App + data endpoints:
  *   GET  /                     -> combined app (Directory / Gallery / Help Wanted)
- *   GET  /browse               -> redirects to /  (merged into the single page)
- *   GET  /users | /avatars     -> JSON lists
- *   GET  /missing-avatars      -> users without pfps (for HELP WANTED)
- *   GET  /submissions?voter=   -> pending community drawings + threshold
- *   POST /submissions          -> submit a 16x16 drawing (user must exist in DB)
- *   POST /submissions/:id/vote -> vote; auto-publishes at the threshold
- *   GET  /export/*.csv         -> old-format CSV backups
+ *   GET  /browse               -> redirects to /
+ *   GET  /users                -> JSON list
+ *   GET  /avatars              -> current pfps, JSON list
+ *   GET  /avatars?asof=DATE    -> pfps as archived by end of that day (NEW)
+ *   GET  /avatar-dates         -> capture days + counts, for the dropdown (NEW)
+ *   GET  /missing-avatars      -> users without pfps
+ *   GET/POST /submissions...   -> community drawings + voting
+ *   POST /auth, /admin/sync    -> scraper tokens / forced RTDB sync
+ *   GET  /export/*.csv         -> old-format backups (current pfps)
  *   GET  /health               -> 200 OK
- *
- * Env vars:
- *   DATABASE_URL  (required)   Neon string (SECRET)
- *   REKINDLE_EMAIL / REKINDLE_PASSWORD    standing RTDB account
- *   AUTH_SECRET   (optional)   required on /auth and /admin/sync as X-Auth-Secret
- *   AVATAR_VOTE_THRESHOLD      votes needed to publish a drawing (default 3)
- *   RTDB_SYNC_HOURS            background sync interval (default 6, 0 = off)
- *   PORT          (optional)   Render sets this; 8765 locally
  */
 
 const path = require('path');
@@ -38,7 +30,6 @@ const PORT = process.env.PORT || 8765;
 const INDEX_HTML = path.join(__dirname, 'index.html');
 const VOTE_THRESHOLD = Math.max(1, parseInt(process.env.AVATAR_VOTE_THRESHOLD, 10) || 3);
 
-// --- CORS (wide open, like the old server) ---
 app.use((req, res, next) => {
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
@@ -98,16 +89,34 @@ app.post('/avatars', rawBody, async (req, res) => {
     }
 });
 
-// --- The app (single page, everything in one place) ---
+// --- App + reads ---
 
 app.get('/', (req, res) => res.sendFile(INDEX_HTML));
-app.get('/browse', (req, res) => res.redirect(302, '/')); // users.html merged into /
+app.get('/browse', (req, res) => res.redirect(302, '/'));
 
+// CHANGED: optional ?asof=YYYY-MM-DD for the archive view
 app.get('/avatars', async (req, res) => {
     try {
+        const asof = String(req.query.asof || '');
+        if (asof) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(asof)) {
+                return res.status(400).json({ error: 'asof must be YYYY-MM-DD' });
+            }
+            return res.json(await db.listAvatarsAsOf(asof));
+        }
         res.json(await db.listAvatars());
     } catch (err) {
         console.error('Failed to list avatars:', err.message);
+        res.status(500).json({ error: 'Database error' });
+    }
+});
+
+// NEW: capture days for the gallery dropdown
+app.get('/avatar-dates', async (req, res) => {
+    try {
+        res.json(await db.listAvatarDates());
+    } catch (err) {
+        console.error('Failed to list avatar dates:', err.message);
         res.status(500).json({ error: 'Database error' });
     }
 });
@@ -121,7 +130,7 @@ app.get('/users', async (req, res) => {
     }
 });
 
-// --- POST /auth -> scraper supplies Firebase session tokens ---
+// --- POST /auth -> scraper tokens ---
 
 app.post('/auth', rawBody, (req, res) => {
     const secret = process.env.AUTH_SECRET;
@@ -169,7 +178,7 @@ app.post('/admin/sync', async (req, res) => {
     res.json({ status: 'ok', trigger: 'manual', ...(await runUserSync('manual')) });
 });
 
-// --- NEW: community avatar drawings (HELP WANTED) ---
+// --- Community avatar drawings ---
 
 app.get('/missing-avatars', async (req, res) => {
     try {
@@ -289,7 +298,7 @@ app.get('/export/avatars.csv', async (req, res) => {
 
 app.use((req, res) => res.status(404).json({ error: "Not found. Use '/' or '/avatars'" }));
 
-// --- Start: create tables first, then listen ---
+// --- Start ---
 
 db.initDb()
 .then(() => {
@@ -297,6 +306,7 @@ db.initDb()
         console.log(`🚀 ReKindle Server (Node + Neon) running on http://0.0.0.0:${PORT}`);
         console.log(`   📌 POST '/' and '/avatars'      → collector API (unchanged)`);
         console.log(`   🌐 GET  '/'                      → directory / gallery / help wanted`);
+        console.log(`   🖼  Avatar archive: GET /avatar-dates, GET /avatars?asof=YYYY-MM-DD`);
         console.log(`   🎨 HELP WANTED: threshold ${VOTE_THRESHOLD} vote(s) to publish`);
         console.log(`   🔥 RTDB username sync: ${rtdb.isAvailable() ? 'enabled' : 'awaiting scraper tokens'}`);
     });

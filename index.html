@@ -254,6 +254,20 @@
         }
         #drop-area.dragover { border-color: black; background: #e0e0e0; }
 
+        #gal-date {
+            border: 2px solid black;
+            border-radius: 0;
+            background: white;
+            font-family: inherit;
+            font-size: 0.85rem;
+            padding: 8px;
+            height: 44px;
+            box-sizing: border-box;
+            flex: 1 1 auto;
+            min-width: 0;
+            margin-right: 8px;
+        }
+
         /* ---- HELP WANTED lists ---- */
         .section-title {
             font-weight: bold;
@@ -659,6 +673,92 @@
         galStats.textContent = 'Showing ' + list.length + ' avatars.';
     }
 
+        var galViewDate = '';   // '' = latest/current
+
+    function galleryCard(username, base64) {
+        var div = document.createElement('div');
+        div.className = 'card';
+        div.style.textDecoration = 'none';
+        var img = document.createElement('img');
+        img.src = base64;
+        img.alt = username;
+        img.onerror = (function (un) {
+            return function () {
+                var ph = placeholder(un);
+                this.replaceWith(ph);
+            };
+        })(username);
+        div.appendChild(img);
+        var name = document.createElement('div');
+        name.className = 'name';
+        name.style.textDecoration = 'none';
+        name.textContent = username;
+        div.appendChild(name);
+        return div;
+    }
+
+    function renderGalleryList(list, asOf) {
+        galGrid.textContent = '';
+        if (!list || list.length === 0) {
+            galStats.textContent = asOf
+                ? 'No avatars archived as of ' + asOf + '.'
+                : 'No avatars in the database yet.';
+            var empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = asOf ? 'Nothing archived by that date.' : 'No avatars yet.';
+            galGrid.appendChild(empty);
+            return;
+        }
+        for (var i = 0; i < list.length; i++) {
+            galGrid.appendChild(galleryCard(list[i].username, list[i].base64));
+        }
+        galStats.textContent = 'Showing ' + list.length + ' avatar(s)' +
+            (asOf ? ' (as of ' + asOf + ')' : '') + '.';
+    }
+
+    function loadGalleryView() {
+        var url = galViewDate ? '/avatars?asof=' + encodeURIComponent(galViewDate) : '/avatars';
+        galStats.textContent = galViewDate
+            ? 'Loading avatars as of ' + galViewDate + '...'
+            : 'Loading avatars...';
+        fetch(url).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(function (avatars) {
+            var list = [];
+            for (var i = 0; i < avatars.length; i++) {
+                list.push({ username: avatars[i].username, base64: avatars[i].avatar });
+            }
+            renderGalleryList(list, galViewDate);
+        }).catch(function (e) {
+            galStats.textContent = 'Could not load: ' + e.message;
+        });
+    }
+
+    function loadAvatarDates() {
+        fetch('/avatar-dates').then(function (r) {
+            return r.ok ? r.json() : [];
+        }).then(function (dates) {
+            var sel = document.getElementById('gal-date');
+            while (sel.firstChild) sel.removeChild(sel.firstChild);
+            var latest = document.createElement('option');
+            latest.value = '';
+            latest.textContent = 'Latest (current)';
+            sel.appendChild(latest);
+            for (var i = 0; i < dates.length; i++) {
+                var opt = document.createElement('option');
+                opt.value = dates[i].date;
+                opt.textContent = dates[i].date + ' (' + dates[i].count + ')';
+                sel.appendChild(opt);
+            }
+        }).catch(function () {});
+    }
+
+    document.getElementById('gal-date').addEventListener('change', function () {
+        galViewDate = this.value;
+        loadGalleryView();
+    });
+
     function parseCSV(text) {
         var lines = text.split('\n');
         var data = [];
@@ -723,7 +823,7 @@
         if (galFile.files.length > 0) handleFile(galFile.files[0]);
     });
     document.getElementById('gal-reload').addEventListener('click', function () {
-        loadDirectory();
+        loadGalleryView();
     });
 
     // ================= HELP WANTED =================
@@ -1088,7 +1188,13 @@
                     };
                 });
                 applyFilter('');
-                renderGalleryTab();
+                if (!galViewDate) {
+                    var galList = [];
+                    avatarMap.forEach(function (v, k) {
+                        galList.push({ username: k, base64: v });
+                    });
+                    renderGalleryList(galList, '');
+                }
             });
         }).catch(function (err) {
             dirStats.textContent = 'Could not load users: ' + err.message;
@@ -1105,6 +1211,7 @@
     missingMoreBtn.addEventListener('click', function () { renderMissing(false); });
 
     loadDirectory();
+    loadAvatarDates();
 </script>
 
 </body>

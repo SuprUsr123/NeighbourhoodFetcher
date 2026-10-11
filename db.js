@@ -3,16 +3,18 @@
  *
  * Tables (created automatically):
  *   rekindle_users       (user_id PK, username, created_at)
- *   rekindle_avatars     (username PK, avatar, created_at)
- *   avatar_submissions   (community-drawn 16x16 pfps: pending -> published)
+ *   rekindle_avatars     (username PK, avatar)   -- CURRENT pfp per user
+ *   avatar_versions      (history: one row per distinct pfp, md5-deduped)
+ *   avatar_submissions   (community drawings: pending -> published)
  *   avatar_votes         (one vote per (submission, voter))
  *
- * Users are keyed by UID; RTDB usernames replace stored ones; UID-prefix
- * default names are never stored; avatar rows follow username renames.
- * When a submission reaches the vote threshold, voteOnSubmission() promotes
- * it into rekindle_avatars inside the same transaction.
+ * Avatar behavior: the current row only updates when the incoming data
+ * DIFFERS; every new/changed pfp also gets a version row with its capture
+ * date. Identical data never stores twice (userscript fingerprint + unique
+ * (username, avatar_hash) index). Username renames carry both tables along.
  */
 
+const crypto = require('crypto');
 const { Pool } = require('pg');
 const rtdb = require('./rtdb');
 
@@ -20,6 +22,10 @@ const USERS_CHUNK = 500;
 const AVATARS_CHUNK = 100;
 
 let pool = null;
+
+function md5(s) {
+  return crypto.createHash('md5').update(s).digest('hex');
+}
 
 function sslFor(url) {
   if (/sslmode=disable/i.test(url)) return false;
@@ -83,17 +89,34 @@ async function initDb() {
       avatar     TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`));
-  // NEW: community-drawn avatar submissions + votes
+  // NEW: avatar history — one row per distinct pfp per user
+  await withRetry(() => p.query(`
+    CREATE TABLE IF NOT EXISTS avatar_versions (
+      id          SERIAL PRIMARY KEY,
+      username    TEXT NOT NULL,
+      avatar      TEXT NOT NULL,
+      avatar_hash TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`));
+  await withRetry(() => p.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS avatar_versions_uq
+      ON avatar_versions (username, avatar_hash)`));
+  // NEW: backfill — every current avatar gets its first version row
+  // (idempotent: identical data can't insert twice)
+  await withRetry(() => p.query(`
+    INSERT INTO avatar_versions (username, avatar, avatar_hash)
+    SELECT username, avatar, md5(avatar) FROM rekindle_avatars
+    ON CONFLICT (username, avatar_hash) DO NOTHING`));
   await withRetry(() => p.query(`
     CREATE TABLE IF NOT EXISTS avatar_submissions (
       id          SERIAL PRIMARY KEY,
       user_id     TEXT NOT NULL,
-      username    TEXT NOT NULL,          -- snapshot at submit time
-      image       TEXT NOT NULL,          -- data:image/png;base64 (16x16)
-      grid        JSONB NOT NULL,         -- 256 hex colors, for provenance
+      username    TEXT NOT NULL,
+      image       TEXT NOT NULL,
+      grid        JSONB NOT NULL,
       artist      TEXT NOT NULL DEFAULT '',
-      submitter   TEXT NOT NULL DEFAULT '',  -- voter id of the artist
-      status      TEXT NOT NULL DEFAULT 'pending',  -- pending | published
+      submitter   TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL DEFAULT 'pending',
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     )`));
   await withRetry(() => p.query(`
@@ -179,7 +202,7 @@ async function insertUsers(rows) {
         written += res.rowCount ?? 0;
       }
 
-      // avatar rows follow username renames (skip if new name already has one)
+      // username renames: current table AND version history follow along
       for (const [uid, name] of batch) {
         const old = oldNames.get(uid);
         if (old && old !== name) {
@@ -187,6 +210,13 @@ async function insertUsers(rows) {
             `UPDATE rekindle_avatars SET username = $1
              WHERE username = $2
                AND NOT EXISTS (SELECT 1 FROM rekindle_avatars WHERE username = $1)`,
+            [name, old]);
+          // NEW: history follows renames too (guard the unique index)
+          await client.query(
+            `UPDATE avatar_versions v SET username = $1
+             WHERE v.username = $2
+               AND NOT EXISTS (SELECT 1 FROM avatar_versions w
+                               WHERE w.username = $1 AND w.avatar_hash = v.avatar_hash)`,
             [name, old]);
         }
       }
@@ -216,37 +246,50 @@ async function listUsers() {
 }
 
 // ---------------------------------------------------------------------------
-// Avatars (scraped: dedupe by username, first one wins)
+// Avatars (NEW: versioned history — identical data never stores twice)
 // ---------------------------------------------------------------------------
 
-function buildInsert(table, columns, conflictColumn, rows) {
-  const values = [];
-  const tuples = rows.map((row) => {
-    const start = values.length;
-    row.forEach((v) => values.push(v));
-    return `(${columns.map((_, i) => `$${start + i + 1}`).join(',')})`;
-  }).join(',');
-  const sql =
-    `INSERT INTO ${table} (${columns.join(',')}) VALUES ${tuples} ` +
-    `ON CONFLICT (${conflictColumn}) DO NOTHING`;
-  return { sql, values };
-}
+async function insertAvatars(rows) {
+  const clean = new Map(); // username -> avatar, last-wins within a batch
+  for (const row of rows) {
+    const username = String(row?.username ?? '').trim();
+    const avatar = String(row?.avatar ?? '').trim();
+    if (username && avatar) clean.set(username, avatar);
+  }
+  const batch = [...clean.entries()];
+  if (batch.length === 0) return 0;
 
-async function insertMany(table, columns, conflictColumn, rows, chunkSize) {
-  if (rows.length === 0) return 0;
   return withRetry(async () => {
     const client = await getPool().connect();
-    let inserted = 0;
+    let stored = 0;
     try {
-      await client.query('BEGIN');
-      for (let i = 0; i < rows.length; i += chunkSize) {
-        const chunk = rows.slice(i, i + chunkSize);
-        const { sql, values } = buildInsert(table, columns, conflictColumn, chunk);
-        const res = await client.query(sql, values);
-        inserted += res.rowCount ?? 0;
+      for (let i = 0; i < batch.length; i += AVATARS_CHUNK) {
+        const chunk = batch.slice(i, i + AVATARS_CHUNK);
+        await client.query('BEGIN');
+        for (const [username, avatar] of chunk) {
+          // Update the CURRENT row only when the data differs — the WHERE
+          // clause makes identical data a silent no-op.
+          const res = await client.query(
+            `INSERT INTO rekindle_avatars (username, avatar)
+             VALUES ($1, $2)
+             ON CONFLICT (username) DO UPDATE
+               SET avatar = EXCLUDED.avatar, created_at = now()
+               WHERE rekindle_avatars.avatar <> EXCLUDED.avatar
+             RETURNING username`,
+            [username, avatar]);
+          if ((res.rowCount ?? 0) > 0) {
+            // new or changed pfp -> record the version (md5-deduped)
+            await client.query(
+              `INSERT INTO avatar_versions (username, avatar, avatar_hash)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (username, avatar_hash) DO NOTHING`,
+              [username, avatar, md5(avatar)]);
+            stored++;
+          }
+        }
+        await client.query('COMMIT');
       }
-      await client.query('COMMIT');
-      return inserted;
+      return stored;
     } catch (err) {
       try { await client.query('ROLLBACK'); } catch (_) {}
       throw err;
@@ -256,30 +299,40 @@ async function insertMany(table, columns, conflictColumn, rows, chunkSize) {
   });
 }
 
-async function insertAvatars(rows) {
-  const clean = new Map(); // first one wins
-  for (const row of rows) {
-    const username = String(row?.username ?? '').trim();
-    const avatar = String(row?.avatar ?? '').trim();
-    if (username && avatar && !clean.has(username)) clean.set(username, [username, avatar]);
-  }
-  return insertMany('rekindle_avatars', ['username', 'avatar'], 'username',
-                    [...clean.values()], AVATARS_CHUNK);
-}
-
 async function listAvatars() {
   const { rows } = await withRetry(() =>
     getPool().query('SELECT username, avatar FROM rekindle_avatars ORDER BY username'));
   return rows;
 }
 
+/** NEW: distinct capture days, for the gallery dropdown. */
+async function listAvatarDates() {
+  const { rows } = await withRetry(() => getPool().query(
+    `SELECT to_char(created_at, 'YYYY-MM-DD') AS date, COUNT(*) AS count
+     FROM avatar_versions
+     GROUP BY 1
+     ORDER BY 1 DESC`));
+  return rows.map((r) => ({ date: r.date, count: parseInt(r.count, 10) }));
+}
+
+/** NEW: each user's pfp as it stood by the end of the given day. */
+async function listAvatarsAsOf(dateStr) {
+  const { rows } = await withRetry(() => getPool().query(
+    `SELECT DISTINCT ON (username) username, avatar
+     FROM avatar_versions
+     WHERE created_at < ($1::date + INTERVAL '1 day')
+     ORDER BY username, created_at DESC, id DESC`,
+    [dateStr]));
+  return rows;
+}
+
 // ---------------------------------------------------------------------------
-// Background sync (RTDB -> DB), used by the scheduler and POST /admin/sync
+// Background sync (RTDB -> DB)
 // ---------------------------------------------------------------------------
 
 async function syncUsernames() {
   const users = await listUsers();
-  const rtdbMap = await rtdb.getUsernames(true); // fresh fetch
+  const rtdbMap = await rtdb.getUsernames(true);
   if (!rtdbMap) throw new Error('RTDB auth not available');
 
   const targets = [];
@@ -298,10 +351,9 @@ async function syncUsernames() {
 }
 
 // ---------------------------------------------------------------------------
-// NEW: community avatar submissions (HELP WANTED)
+// Community avatar submissions (HELP WANTED)
 // ---------------------------------------------------------------------------
 
-/** Users that have no pfp, with their pending submission count. */
 async function listMissingAvatarUsers() {
   const { rows } = await withRetry(() => getPool().query(`
     SELECT u.user_id AS id, u.username, COALESCE(p.pending, 0) AS pending
@@ -316,7 +368,6 @@ async function listMissingAvatarUsers() {
   return rows.map((r) => Object.assign(r, { pending: parseInt(r.pending, 10) }));
 }
 
-/** Pending submissions, annotated for one voter (voted / own). */
 async function listSubmissions(voter) {
   const { rows } = await withRetry(() => getPool().query(
     `SELECT s.id, s.user_id AS "userId", s.username, s.image, s.artist, s.status,
@@ -331,10 +382,6 @@ async function listSubmissions(voter) {
   return rows.map((r) => Object.assign(r, { votes: parseInt(r.votes, 10) }));
 }
 
-/**
- * Create a pending submission. Returns null when the target user does not
- * exist in the database ("the database has it" rule).
- */
 async function createSubmission(userId, image, grid, artist, submitter) {
   const user = await withRetry(() =>
     getPool().query('SELECT username FROM rekindle_users WHERE user_id = $1', [userId]));
@@ -348,10 +395,6 @@ async function createSubmission(userId, image, grid, artist, submitter) {
   return res.rows[0];
 }
 
-/**
- * Cast a vote; when the threshold is reached, promote the drawing into
- * rekindle_avatars (making it the user's live pfp) in the same transaction.
- */
 async function voteOnSubmission(id, voter, threshold) {
   if (!id || !voter) return { ok: false, message: 'missing id or voter' };
   return withRetry(async () => {
@@ -388,11 +431,16 @@ async function voteOnSubmission(id, voter, threshold) {
 
       let published = false;
       if (votes >= threshold) {
-        // PUBLISH: the voted drawing becomes the user's pfp in the database
         await client.query(
           `INSERT INTO rekindle_avatars (username, avatar) VALUES ($1, $2)
-           ON CONFLICT (username) DO UPDATE SET avatar = EXCLUDED.avatar`,
+           ON CONFLICT (username) DO UPDATE SET avatar = EXCLUDED.avatar, created_at = now()`,
           [row.username, row.image]);
+        // community drawings join the version history too
+        await client.query(
+          `INSERT INTO avatar_versions (username, avatar, avatar_hash)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (username, avatar_hash) DO NOTHING`,
+          [row.username, row.image, md5(row.image)]);
         await client.query(
           `UPDATE avatar_submissions SET status = 'published' WHERE id = $1`, [id]);
         published = true;
@@ -419,5 +467,5 @@ async function end() {
 module.exports = {
   initDb, insertUsers, insertAvatars, deleteUsers, syncUsernames,
   listMissingAvatarUsers, listSubmissions, createSubmission, voteOnSubmission,
-  listUsers, listAvatars, end, getPool,
+  listUsers, listAvatars, listAvatarDates, listAvatarsAsOf, end, getPool,
 };
