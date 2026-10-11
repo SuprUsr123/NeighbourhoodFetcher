@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ReKindle User Directory</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #f0f0f0;
+            padding: 20px;
+        }
+        .nav {
+            margin-bottom: 12px;
+            font-size: 13px;
+        }
+        .nav a {
+            color: black;
+        }
+        #stats {
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #333;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        .controls button {
+            background: white;
+            border: 2px solid black;
+            padding: 6px 12px;
+            font-family: inherit;
+            cursor: pointer;
+            box-shadow: 2px 2px 0 black;
+        }
+        .controls button:active {
+            transform: translate(2px, 2px);
+            box-shadow: none;
+        }
+        .controls input {
+            background: white;
+            border: 2px solid black;
+            box-shadow: 2px 2px 0 black;
+            padding: 6px 12px;
+            font-family: inherit;
+            font-size: 14px;
+            width: 280px;
+        }
+        .controls input:focus {
+            outline: none;
+        }
+        .gallery {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .card {
+            background: white;
+            border: 2px solid black;
+            box-shadow: 4px 4px 0 rgba(0,0,0,0.2);
+            padding: 10px;
+            text-align: center;
+            width: 140px;
+        }
+        .card img {
+            border: 1px solid #ccc;
+            width: 64px;
+            height: 64px;
+            image-rendering: pixelated;
+        }
+        .card .placeholder {
+            width: 64px;
+            height: 64px;
+            line-height: 64px;
+            margin: 0 auto;
+            background: #e8e8e8;
+            border: 1px solid #ccc;
+            font-size: 24px;
+            color: #999;
+            overflow: hidden;
+        }
+        .card .name {
+            font-size: 13px;
+            margin-top: 6px;
+            word-break: break-all;
+        }
+        .card .name a {
+            color: black;
+            text-decoration: underline;
+        }
+        .card .name a:hover {
+            background: #ffff66; /* retro hover highlight */
+        }
+        .card .uid {
+            font-size: 10px;
+            color: #999;
+            margin-top: 4px;
+            word-break: break-all;
+        }
+        .empty {
+            color: #999;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+<h1>👥 ReKindle User Directory</h1>
+
+<div class="nav">
+    <a href="/">📸 Avatar gallery</a> &nbsp;·&nbsp;
+    <a href="/export/users.csv">⬇ Download users.csv</a>
+</div>
+
+<div id="stats">Loading users…</div>
+
+<div class="controls">
+    <input id="search" type="search" placeholder="Search username or ID…" autocomplete="off">
+</div>
+
+<div id="gallery" class="gallery"></div>
+
+<div class="controls">
+    <button id="moreBtn" hidden>Show more</button>
+</div>
+
+<script>
+    const gallery = document.getElementById('gallery');
+    const stats = document.getElementById('stats');
+    const searchInput = document.getElementById('search');
+    const moreBtn = document.getElementById('moreBtn');
+
+    const PROFILE_BASE = 'https://rekindle.ink/neighbourhood?uid=';
+    const PAGE_SIZE = 96;   // rendered in chunks so huge lists stay snappy
+
+    let allUsers = [];      // [{id, username, avatar}]
+    let filtered = [];
+    let shown = 0;
+    let searchTimer = null;
+
+    function profileUrl(user) {
+        // username click → https://rekindle.ink/neighbourhood?uid=(userid)
+        return PROFILE_BASE + encodeURIComponent(user.id);
+    }
+
+    function placeholder(username) {
+        const div = document.createElement('div');
+        div.className = 'placeholder';
+        div.textContent = (username && username[0] || '?').toUpperCase();
+        return div;
+    }
+
+    function card(user) {
+        const card = document.createElement('div');
+        card.className = 'card';
+
+        // avatar if we have one (joined by username), letter placeholder otherwise
+        if (user.avatar) {
+            const img = document.createElement('img');
+            img.src = user.avatar;
+            img.alt = user.username;
+            img.onerror = function () {
+                this.replaceWith(placeholder(user.username));
+            };
+            card.appendChild(img);
+        } else {
+            card.appendChild(placeholder(user.username));
+        }
+
+        // the username itself is the link to the neighbourhood profile
+        const name = document.createElement('div');
+        name.className = 'name';
+        const link = document.createElement('a');
+        link.href = profileUrl(user);
+        link.target = '_blank';              // remove this line to navigate in the same tab
+        link.rel = 'noopener noreferrer';
+        link.textContent = user.username;
+        name.appendChild(link);
+        card.appendChild(name);
+
+        // small gray uid, so you can see exactly which ID the link uses
+        const uid = document.createElement('div');
+        uid.className = 'uid';
+        uid.textContent = user.id;
+        card.appendChild(uid);
+
+        return card;
+    }
+
+    function renderMore() {
+        const slice = filtered.slice(shown, shown + PAGE_SIZE);
+        slice.forEach((u) => gallery.appendChild(card(u)));
+        shown += slice.length;
+
+        stats.textContent = allUsers.length === 0
+            ? 'No users in the database yet.'
+            : `Showing ${shown} of ${filtered.length} users` +
+              (filtered.length !== allUsers.length
+                  ? ` (filtered from ${allUsers.length})` : '');
+
+        moreBtn.hidden = shown >= filtered.length;
+        if (!moreBtn.hidden) {
+            moreBtn.textContent = `Show more (${filtered.length - shown} left)`;
+        }
+    }
+
+    function applyFilter(query) {
+        const q = query.trim().toLowerCase();
+        filtered = q
+            ? allUsers.filter((u) =>
+                u.username.toLowerCase().includes(q) ||
+                String(u.id).toLowerCase().includes(q))
+            : allUsers.slice();
+
+        shown = 0;
+        gallery.innerHTML = '';
+
+        if (filtered.length === 0) {
+            gallery.innerHTML = '<div class="empty">No users match your search.</div>';
+            stats.textContent = allUsers.length
+                ? `0 of ${allUsers.length} users match “${query.trim()}”.`
+                : 'No users in the database yet.';
+            moreBtn.hidden = true;
+            return;
+        }
+        renderMore();
+    }
+
+    async function load() {
+        stats.textContent = 'Loading users…';
+
+        // Users are the required part; avatars are a bonus (letter placeholders
+        // are shown if the avatar request fails or a user has no avatar).
+        const [usersRes, avatarsRes] = await Promise.all([
+            fetch('/users'),
+            fetch('/avatars').catch(() => null),
+        ]);
+        if (!usersRes.ok) throw new Error('HTTP ' + usersRes.status);
+        const users = await usersRes.json();
+
+        const avatarMap = new Map();
+        if (avatarsRes && avatarsRes.ok) {
+            (await avatarsRes.json()).forEach((a) => avatarMap.set(a.username, a.avatar));
+        }
+
+        // Server already returns users sorted by username
+        allUsers = users.map((u) => ({
+            id: u.id,
+            username: u.username,
+            avatar: avatarMap.get(u.username) || null,
+        }));
+
+        applyFilter('');
+    }
+
+    // Debounced live search
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => applyFilter(searchInput.value), 150);
+    });
+
+    moreBtn.addEventListener('click', renderMore);
+
+    load().catch((err) => {
+        stats.textContent = 'Could not load users: ' + err.message;
+    });
+</script>
+
+</body>
+</html>
